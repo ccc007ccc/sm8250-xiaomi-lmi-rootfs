@@ -8,7 +8,8 @@ SUITE=${SUITE:-noble}
 ARCH=${ARCH:-arm64}
 MIRROR=${MIRROR:-http://ports.ubuntu.com/ubuntu-ports}
 FORCE=${FORCE:-0}
-PACKAGES=${PACKAGES:-systemd-sysv udev dbus login bash util-linux e2fsprogs procps iproute2 kmod sudo ca-certificates}
+PACKAGES=${PACKAGES:-systemd-sysv udev dbus login bash util-linux e2fsprogs procps iproute2 kmod sudo ca-certificates pciutils iw rfkill wireless-regdb bluez bluetooth wpasupplicant}
+FIRMWARE_SRC_DIR=${FIRMWARE_SRC_DIR:-"$REPO_ROOT/local/firmware"}
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -32,6 +33,9 @@ require_cmd mknod
 require_cmd ln
 require_cmd awk
 require_cmd sort
+require_cmd install
+require_cmd sha256sum
+require_cmd stat
 
 WORK_DIR="$ROOTFS_DIR.tmp"
 
@@ -119,6 +123,46 @@ chmod 0755 "$WORK_DIR/usr/sbin/policy-rc.d"
 
 run_chroot 'apt-get update'
 run_chroot "env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $PACKAGES"
+
+install_firmware() {
+  MANIFEST="$OUT_DIR/firmware-manifest.txt"
+  rm -f "$MANIFEST"
+
+  if [ ! -d "$FIRMWARE_SRC_DIR" ]; then
+    printf 'firmware source not found, skipping: %s\n' "$FIRMWARE_SRC_DIR"
+    return 0
+  fi
+
+  FW_DIR="$WORK_DIR/usr/lib/firmware"
+  mkdir -p "$FW_DIR"
+  (
+    cd "$FIRMWARE_SRC_DIR"
+    find . -type f | LC_ALL=C sort
+  ) | while IFS= read -r REL; do
+    REL=${REL#./}
+    install -D -m 0644 "$FIRMWARE_SRC_DIR/$REL" "$FW_DIR/$REL"
+  done
+
+  ATH11K_DIR="$FW_DIR/ath11k/QCA6390/hw2.0"
+  if [ -e "$ATH11K_DIR/amss20.bin" ] && [ ! -e "$ATH11K_DIR/amss.bin" ]; then
+    cp -a "$ATH11K_DIR/amss20.bin" "$ATH11K_DIR/amss.bin"
+  fi
+  if [ -e "$ATH11K_DIR/bdwlan.elf" ] && [ ! -e "$ATH11K_DIR/board.bin" ]; then
+    cp -a "$ATH11K_DIR/bdwlan.elf" "$ATH11K_DIR/board.bin"
+  fi
+
+  (
+    cd "$FW_DIR"
+    find . -type f | LC_ALL=C sort
+  ) | while IFS= read -r REL; do
+    REL=${REL#./}
+    SIZE=$(stat -c %s "$FW_DIR/$REL")
+    SHA=$(sha256sum "$FW_DIR/$REL" | awk '{ print $1 }')
+    printf '%s  %s  %s\n' "$SHA" "$SIZE" "$REL"
+  done > "$MANIFEST"
+}
+
+install_firmware
 
 printf 'lmi-ubuntu\n' > "$WORK_DIR/etc/hostname"
 cat > "$WORK_DIR/etc/hosts" <<'EOF'
@@ -226,21 +270,12 @@ esac
 
 run sh -c "dmesg | grep -Ei 'ufshcd|sda3[45]|linuxroot|ubuntu-rootfs|ext4|systemd|drm|dsi|panel|error|fail|warn' | tail -n 160"
 
-I=0
-while [ "$I" -lt 10 ]; do
-  emit "alive seconds=$((I * 30)) root=$(findmnt -n -o SOURCE / 2>/dev/null) free=$(df -h / 2>/dev/null | tail -n 1)"
-  sleep 30
-  I=$((I + 1))
-done
-
 if [ -e /etc/lmi/no-autoreboot ]; then
   emit "autoreboot_disabled marker=/etc/lmi/no-autoreboot"
-  exit 0
 fi
 
-emit "autoreboot_now after=300s"
-sync
-systemctl reboot -i || reboot -f
+emit "report_done"
+exit 0
 EOF
 chmod 0755 "$WORK_DIR/usr/local/sbin/lmi-console-report"
 
@@ -377,6 +412,110 @@ StandardError=journal+console
 WantedBy=multi-user.target
 EOF
 
+cat > "$WORK_DIR/usr/local/sbin/lmi-wireless-reprobe" <<'EOF'
+#!/bin/sh
+set +e
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LOG=/var/log/lmi-wireless-reprobe.log
+mkdir -p /var/log
+
+emit() {
+  MSG="LMI_WIRELESS $*"
+  printf '%s\n' "$MSG" >> "$LOG"
+  [ -e /dev/pmsg0 ] && printf '%s\n' "$MSG" > /dev/pmsg0 2>/dev/null || true
+}
+
+fix_wifi_mac() {
+  IFACE=$1
+  ADDR=$(cat "/sys/class/net/$IFACE/address" 2>/dev/null)
+  [ "$ADDR" = "00:00:00:00:00:00" ] || return 0
+
+  MID=$(tr -dc '0-9a-f' < /etc/machine-id 2>/dev/null | head -c 10)
+  [ ${#MID} -eq 10 ] || MID=0063910001
+  MAC=$(printf '02:%s:%s:%s:%s:%s' \
+    "$(printf '%s' "$MID" | cut -c1-2)" \
+    "$(printf '%s' "$MID" | cut -c3-4)" \
+    "$(printf '%s' "$MID" | cut -c5-6)" \
+    "$(printf '%s' "$MID" | cut -c7-8)" \
+    "$(printf '%s' "$MID" | cut -c9-10)")
+  ip link set dev "$IFACE" address "$MAC" 2>>"$LOG" && emit "wifi_mac_set iface=$IFACE mac=$MAC"
+}
+
+wait_wifi_iface() {
+  DEVPATH=$1
+  I=0
+  while [ "$I" -lt 30 ]; do
+    for NETPATH in "$DEVPATH"/net/*; do
+      [ -e "$NETPATH/address" ] || continue
+      IFACE=${NETPATH##*/}
+      fix_wifi_mac "$IFACE"
+      ip link set "$IFACE" up >>"$LOG" 2>&1 || true
+      emit "wifi_iface_ready iface=$IFACE addr=$(cat /sys/class/net/$IFACE/address 2>/dev/null)"
+      return 0
+    done
+    sleep 1
+    I=$((I + 1))
+  done
+  emit "wifi_iface_timeout dev=${DEVPATH##*/}"
+}
+
+bind_wifi() {
+  [ -e /usr/lib/firmware/ath11k/QCA6390/hw2.0/amss.bin ] || {
+    emit "wifi_skip missing_amss"
+    return 0
+  }
+
+  for DEVPATH in /sys/bus/pci/devices/*; do
+    [ -e "$DEVPATH/vendor" ] || continue
+    [ "$(cat "$DEVPATH/vendor" 2>/dev/null)" = "0x17cb" ] || continue
+    [ "$(cat "$DEVPATH/device" 2>/dev/null)" = "0x1101" ] || continue
+    SLOT=${DEVPATH##*/}
+    if [ ! -e "$DEVPATH/driver" ] && [ -e /sys/bus/pci/drivers/ath11k_pci/bind ]; then
+      echo "$SLOT" > /sys/bus/pci/drivers/ath11k_pci/bind 2>>"$LOG"
+      emit "wifi_bind slot=$SLOT"
+    fi
+    wait_wifi_iface "$DEVPATH"
+  done
+}
+
+bind_bt() {
+  [ -e /usr/lib/firmware/qca/htbtfw20.tlv ] || {
+    emit "bt_skip missing_htbtfw20"
+    return 0
+  }
+  [ -e /sys/bus/serial/drivers/hci_uart_qca/bind ] || return 0
+
+  if [ -e /sys/bus/serial/devices/serial0-0/driver/unbind ]; then
+    echo serial0-0 > /sys/bus/serial/devices/serial0-0/driver/unbind 2>>"$LOG"
+    sleep 1
+  fi
+  echo serial0-0 > /sys/bus/serial/drivers/hci_uart_qca/bind 2>>"$LOG"
+  emit "bt_rebind serial0-0"
+}
+
+bind_wifi
+bind_bt
+emit "done"
+EOF
+chmod 0755 "$WORK_DIR/usr/local/sbin/lmi-wireless-reprobe"
+
+cat > "$WORK_DIR/etc/systemd/system/lmi-wireless-reprobe.service" <<'EOF'
+[Unit]
+Description=LMI wireless firmware reprobe
+After=local-fs.target systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lmi-wireless-reprobe
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 mkdir -p "$WORK_DIR/etc/systemd/system/serial-getty@ttyGS0.service.d"
 cat > "$WORK_DIR/etc/systemd/system/serial-getty@ttyGS0.service.d/autologin.conf" <<'EOF'
 [Service]
@@ -388,7 +527,7 @@ EOF
 mkdir -p "$WORK_DIR/etc/systemd/system/multi-user.target.wants" "$WORK_DIR/etc/systemd/system/getty.target.wants" "$WORK_DIR/etc/lmi"
 touch "$WORK_DIR/etc/lmi/no-autoreboot"
 ln -sf /etc/systemd/system/lmi-firstboot-report.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-firstboot-report.service"
-ln -sf /etc/systemd/system/lmi-console-report.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-console-report.service"
+ln -sf /etc/systemd/system/lmi-wireless-reprobe.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-wireless-reprobe.service"
 ln -sf /lib/systemd/system/serial-getty@.service "$WORK_DIR/etc/systemd/system/getty.target.wants/serial-getty@ttyGS0.service"
 ln -sf /lib/systemd/system/multi-user.target "$WORK_DIR/etc/systemd/system/default.target"
 for target in sleep.target suspend.target hibernate.target hybrid-sleep.target; do

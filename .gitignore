@@ -1,4 +1,5 @@
 out/
+local/
 *.tmp
 *.log
 __pycache__/
