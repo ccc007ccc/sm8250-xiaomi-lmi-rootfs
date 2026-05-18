@@ -8,8 +8,11 @@ SUITE=${SUITE:-noble}
 ARCH=${ARCH:-arm64}
 MIRROR=${MIRROR:-http://ports.ubuntu.com/ubuntu-ports}
 FORCE=${FORCE:-0}
-PACKAGES=${PACKAGES:-systemd-sysv udev dbus login bash util-linux e2fsprogs procps iproute2 kmod sudo ca-certificates pciutils iw rfkill wireless-regdb bluez bluetooth wpasupplicant}
+PACKAGES=${PACKAGES:-systemd-sysv udev dbus login bash util-linux e2fsprogs procps iproute2 kmod sudo ca-certificates pciutils iw rfkill wireless-regdb bluez bluetooth wpasupplicant openssh-server systemd-resolved}
 FIRMWARE_SRC_DIR=${FIRMWARE_SRC_DIR:-"$REPO_ROOT/local/firmware"}
+LOCAL_ENV=${LOCAL_ENV:-"$REPO_ROOT/local/rootfs.env"}
+SSH_AUTHORIZED_KEYS=${SSH_AUTHORIZED_KEYS:-"$REPO_ROOT/local/authorized_keys"}
+WIFI_COUNTRY=${WIFI_COUNTRY:-CN}
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -20,6 +23,10 @@ require_cmd() {
 
 if [ "$(id -u)" -ne 0 ]; then
   exec sudo -E "$0" "$@"
+fi
+
+if [ -e "$LOCAL_ENV" ]; then
+  . "$LOCAL_ENV"
 fi
 
 unset http_proxy https_proxy ftp_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY NO_PROXY
@@ -163,6 +170,66 @@ install_firmware() {
 }
 
 install_firmware
+
+configure_networking() {
+  mkdir -p "$WORK_DIR/etc/systemd/network"
+  cat > "$WORK_DIR/etc/systemd/network/20-wlan.network" <<'EOF'
+[Match]
+Name=wlan* wlp*
+
+[Network]
+DHCP=yes
+IPv6AcceptRA=yes
+
+[DHCPv4]
+RouteMetric=20
+EOF
+
+  if [ -n "${WIFI_SSID:-}" ]; then
+    [ -n "${WIFI_PSK:-}" ] || {
+      printf 'WIFI_PSK is required when WIFI_SSID is set\n' >&2
+      exit 1
+    }
+    mkdir -p "$WORK_DIR/etc/wpa_supplicant"
+    TMP_CONF="$WORK_DIR/etc/wpa_supplicant/lmi-wifi.conf.tmp"
+    {
+      printf 'ctrl_interface=DIR=/run/wpa_supplicant\n'
+      printf 'update_config=1\n'
+      printf 'country=%s\n\n' "$WIFI_COUNTRY"
+      printf '%s\n' "$WIFI_PSK" | chroot "$WORK_DIR" /usr/bin/qemu-aarch64-static /usr/bin/wpa_passphrase "$WIFI_SSID" | grep -v '^[[:space:]]*#psk='
+    } > "$TMP_CONF"
+    install -m 0600 "$TMP_CONF" "$WORK_DIR/etc/wpa_supplicant/lmi-wifi.conf"
+    rm -f "$TMP_CONF"
+  fi
+
+  ln -sf /run/systemd/resolve/stub-resolv.conf "$WORK_DIR/etc/resolv.conf"
+}
+
+install_ssh_authorized_keys() {
+  mkdir -p "$WORK_DIR/etc/ssh/sshd_config.d"
+  cat > "$WORK_DIR/etc/ssh/sshd_config.d/lmi.conf" <<'EOF'
+PermitRootLogin prohibit-password
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+EOF
+
+  mkdir -p "$WORK_DIR/etc/systemd/system/bluetooth.service.d"
+  cat > "$WORK_DIR/etc/systemd/system/bluetooth.service.d/lmi.conf" <<'EOF'
+[Unit]
+After=lmi-wireless-reprobe.service
+EOF
+
+  if [ -e "$SSH_AUTHORIZED_KEYS" ]; then
+    install -d -m 0700 "$WORK_DIR/root/.ssh"
+    install -m 0600 "$SSH_AUTHORIZED_KEYS" "$WORK_DIR/root/.ssh/authorized_keys"
+  else
+    printf 'ssh authorized_keys not found, key login will be unavailable: %s\n' "$SSH_AUTHORIZED_KEYS"
+  fi
+}
+
+configure_networking
+install_ssh_authorized_keys
 
 printf 'lmi-ubuntu\n' > "$WORK_DIR/etc/hostname"
 cat > "$WORK_DIR/etc/hosts" <<'EOF'
@@ -412,6 +479,96 @@ StandardError=journal+console
 WantedBy=multi-user.target
 EOF
 
+cat > "$WORK_DIR/usr/local/sbin/lmi-firmware-import" <<'EOF'
+#!/bin/sh
+set +e
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LOG=/var/log/lmi-firmware-import.log
+ATH_DIR=/usr/lib/firmware/ath11k/QCA6390/hw2.0
+QCA_DIR=/usr/lib/firmware/qca
+mkdir -p /var/log "$ATH_DIR" "$QCA_DIR" /mnt/lmi-firmware-modem /mnt/lmi-firmware-bt
+
+emit() {
+  MSG="LMI_FIRMWARE $*"
+  printf '%s\n' "$MSG" >> "$LOG"
+  [ -e /dev/pmsg0 ] && printf '%s\n' "$MSG" > /dev/pmsg0 2>/dev/null || true
+}
+
+find_part() {
+  LABEL=$1
+  for DEV in "/dev/disk/by-partlabel/$LABEL" "/dev/block/by-name/$LABEL"; do
+    [ -e "$DEV" ] && readlink -f "$DEV" && return 0
+  done
+  blkid -t "PARTLABEL=$LABEL" -o device 2>/dev/null | head -n 1
+}
+
+copy_wifi() {
+  MODEM_DEV=$(find_part modem)
+  [ -n "$MODEM_DEV" ] || {
+    emit "wifi_skip missing_modem_part"
+    return 0
+  }
+  mountpoint -q /mnt/lmi-firmware-modem || mount -o ro "$MODEM_DEV" /mnt/lmi-firmware-modem 2>>"$LOG"
+  SRC=/mnt/lmi-firmware-modem/image/qca6390
+  [ -d "$SRC" ] || {
+    emit "wifi_skip missing_qca6390_dir"
+    return 0
+  }
+  cp -a "$SRC/." "$ATH_DIR/" 2>>"$LOG"
+  [ -e "$ATH_DIR/amss20.bin" ] && cp -a "$ATH_DIR/amss20.bin" "$ATH_DIR/amss.bin"
+  [ -e "$ATH_DIR/bdwlan.elf" ] && cp -a "$ATH_DIR/bdwlan.elf" "$ATH_DIR/board.bin"
+  emit "wifi_imported src=$MODEM_DEV"
+}
+
+copy_bt() {
+  BT_DEV=$(find_part bluetooth)
+  [ -n "$BT_DEV" ] || {
+    emit "bt_skip missing_bluetooth_part"
+    return 0
+  }
+  mountpoint -q /mnt/lmi-firmware-bt || mount -o ro "$BT_DEV" /mnt/lmi-firmware-bt 2>>"$LOG"
+  SRC=/mnt/lmi-firmware-bt/image
+  [ -d "$SRC" ] || {
+    emit "bt_skip missing_bt_image_dir"
+    return 0
+  }
+  cp -a "$SRC/." "$QCA_DIR/" 2>>"$LOG"
+  emit "bt_imported src=$BT_DEV"
+}
+
+copy_wifi
+copy_bt
+(
+  cd /usr/lib/firmware
+  find ath11k/QCA6390/hw2.0 qca -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r REL; do
+    SIZE=$(stat -c %s "$REL" 2>/dev/null)
+    SHA=$(sha256sum "$REL" 2>/dev/null | awk '{ print $1 }')
+    [ -n "$SIZE" ] && [ -n "$SHA" ] && printf '%s  %s  %s\n' "$SHA" "$SIZE" "$REL"
+  done
+) > /usr/lib/firmware/lmi-firmware-manifest.txt
+emit "done"
+EOF
+chmod 0755 "$WORK_DIR/usr/local/sbin/lmi-firmware-import"
+
+cat > "$WORK_DIR/etc/systemd/system/lmi-firmware-import.service" <<'EOF'
+[Unit]
+Description=LMI import firmware from stock partitions
+After=local-fs.target systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+Before=lmi-wireless-reprobe.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/lmi-firmware-import
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 cat > "$WORK_DIR/usr/local/sbin/lmi-wireless-reprobe" <<'EOF'
 #!/bin/sh
 set +e
@@ -503,12 +660,98 @@ chmod 0755 "$WORK_DIR/usr/local/sbin/lmi-wireless-reprobe"
 cat > "$WORK_DIR/etc/systemd/system/lmi-wireless-reprobe.service" <<'EOF'
 [Unit]
 Description=LMI wireless firmware reprobe
-After=local-fs.target systemd-udev-settle.service
-Wants=systemd-udev-settle.service
+After=local-fs.target systemd-udev-settle.service lmi-firmware-import.service
+Wants=systemd-udev-settle.service lmi-firmware-import.service
 
 [Service]
 Type=oneshot
+RemainAfterExit=yes
 ExecStart=/usr/local/sbin/lmi-wireless-reprobe
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > "$WORK_DIR/usr/local/sbin/lmi-wifi-connect" <<'EOF'
+#!/bin/sh
+set +e
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LOG=/var/log/lmi-wifi-connect.log
+CONF=/etc/wpa_supplicant/lmi-wifi.conf
+mkdir -p /var/log /run/wpa_supplicant
+
+emit() {
+  MSG="LMI_WIFI $*"
+  printf '%s\n' "$MSG" >> "$LOG"
+  [ -e /dev/pmsg0 ] && printf '%s\n' "$MSG" > /dev/pmsg0 2>/dev/null || true
+}
+
+[ -e "$CONF" ] || {
+  emit "skip missing_config"
+  exit 0
+}
+
+systemctl start systemd-networkd.service systemd-resolved.service >>"$LOG" 2>&1 || true
+rfkill unblock wifi >>"$LOG" 2>&1 || true
+
+IFACE=
+I=0
+while [ "$I" -lt 60 ]; do
+  for NETPATH in /sys/class/net/wlp* /sys/class/net/wlan*; do
+    [ -e "$NETPATH" ] || continue
+    [ -d "$NETPATH/wireless" ] || [ -e "$NETPATH/phy80211" ] || continue
+    IFACE=${NETPATH##*/}
+    break
+  done
+  [ -n "$IFACE" ] && break
+  sleep 1
+  I=$((I + 1))
+done
+
+[ -n "$IFACE" ] || {
+  emit "skip missing_iface"
+  exit 0
+}
+
+ip link set dev "$IFACE" up >>"$LOG" 2>&1 || true
+if [ ! -S "/run/wpa_supplicant/$IFACE" ]; then
+  wpa_supplicant -B -i "$IFACE" -c "$CONF" -f /var/log/lmi-wpa_supplicant.log >>"$LOG" 2>&1
+  emit "wpa_start iface=$IFACE rc=$?"
+fi
+networkctl reload >>"$LOG" 2>&1 || true
+networkctl reconfigure "$IFACE" >>"$LOG" 2>&1 || true
+
+I=0
+while [ "$I" -lt 60 ]; do
+  WPA_STATE=$(wpa_cli -i "$IFACE" status 2>/dev/null | awk -F= '/^wpa_state=/ { print $2 }')
+  ADDR=$(ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{ print $4 }' | head -n 1)
+  if [ -n "$ADDR" ]; then
+    emit "ready iface=$IFACE state=$WPA_STATE addr=$ADDR"
+    exit 0
+  fi
+  sleep 1
+  I=$((I + 1))
+done
+
+emit "timeout iface=$IFACE state=$WPA_STATE"
+exit 0
+EOF
+chmod 0755 "$WORK_DIR/usr/local/sbin/lmi-wifi-connect"
+
+cat > "$WORK_DIR/etc/systemd/system/lmi-wifi-connect.service" <<'EOF'
+[Unit]
+Description=LMI Wi-Fi connection
+After=lmi-wireless-reprobe.service systemd-networkd.service systemd-resolved.service
+Wants=lmi-wireless-reprobe.service systemd-networkd.service systemd-resolved.service
+Before=ssh.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lmi-wifi-connect
+RemainAfterExit=yes
 StandardOutput=journal+console
 StandardError=journal+console
 
@@ -527,7 +770,12 @@ EOF
 mkdir -p "$WORK_DIR/etc/systemd/system/multi-user.target.wants" "$WORK_DIR/etc/systemd/system/getty.target.wants" "$WORK_DIR/etc/lmi"
 touch "$WORK_DIR/etc/lmi/no-autoreboot"
 ln -sf /etc/systemd/system/lmi-firstboot-report.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-firstboot-report.service"
+ln -sf /etc/systemd/system/lmi-firmware-import.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-firmware-import.service"
 ln -sf /etc/systemd/system/lmi-wireless-reprobe.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-wireless-reprobe.service"
+ln -sf /etc/systemd/system/lmi-wifi-connect.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-wifi-connect.service"
+ln -sf /lib/systemd/system/systemd-networkd.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/systemd-networkd.service"
+ln -sf /lib/systemd/system/systemd-resolved.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/systemd-resolved.service"
+ln -sf /lib/systemd/system/ssh.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/ssh.service"
 ln -sf /lib/systemd/system/serial-getty@.service "$WORK_DIR/etc/systemd/system/getty.target.wants/serial-getty@ttyGS0.service"
 ln -sf /lib/systemd/system/multi-user.target "$WORK_DIR/etc/systemd/system/default.target"
 for target in sleep.target suspend.target hibernate.target hybrid-sleep.target; do

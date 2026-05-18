@@ -20,11 +20,22 @@ grep -q '^LABEL=ubuntu-rootfs / ext4 defaults,noatime 0 1$' "$ROOTFS_DIR/etc/fst
 [ ! -e "$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/lmi-console-report.service" ] || fail "console report service should not be enabled"
 [ -x "$ROOTFS_DIR/usr/local/sbin/lmi-usb-gadget" ] || fail "missing usb gadget helper"
 [ ! -e "$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/lmi-usb-gadget.service" ] || fail "usb gadget service should not be enabled"
+[ -x "$ROOTFS_DIR/usr/local/sbin/lmi-firmware-import" ] || fail "missing firmware import helper"
+[ -L "$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/lmi-firmware-import.service" ] || fail "missing firmware import service link"
 [ -x "$ROOTFS_DIR/usr/local/sbin/lmi-wireless-reprobe" ] || fail "missing wireless reprobe helper"
 [ -L "$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/lmi-wireless-reprobe.service" ] || fail "missing wireless reprobe service link"
+[ -x "$ROOTFS_DIR/usr/local/sbin/lmi-wifi-connect" ] || fail "missing wifi connect helper"
+[ -L "$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/lmi-wifi-connect.service" ] || fail "missing wifi connect service link"
+[ -L "$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/systemd-networkd.service" ] || fail "missing networkd service link"
+[ -L "$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/systemd-resolved.service" ] || fail "missing resolved service link"
+[ -L "$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/ssh.service" ] || fail "missing ssh service link"
+[ -e "$ROOTFS_DIR/lib/systemd/system/systemd-resolved.service" ] || fail "missing systemd-resolved service"
+[ -e "$ROOTFS_DIR/etc/systemd/network/20-wlan.network" ] || fail "missing wlan networkd config"
+[ -e "$ROOTFS_DIR/etc/ssh/sshd_config.d/lmi.conf" ] || fail "missing sshd lmi config"
+[ -e "$ROOTFS_DIR/etc/systemd/system/bluetooth.service.d/lmi.conf" ] || fail "missing bluetooth service ordering override"
 [ -L "$ROOTFS_DIR/etc/systemd/system/getty.target.wants/serial-getty@ttyGS0.service" ] || fail "missing ttyGS0 getty link"
 [ -e "$ROOTFS_DIR/etc/lmi/no-autoreboot" ] || fail "missing no-autoreboot marker"
-for path in /usr/bin/lspci /usr/sbin/iw /usr/sbin/rfkill /usr/bin/bluetoothctl /usr/sbin/wpa_supplicant; do
+for path in /usr/bin/lspci /usr/sbin/iw /usr/sbin/rfkill /usr/bin/bluetoothctl /usr/sbin/wpa_supplicant /usr/sbin/sshd; do
   [ -e "$ROOTFS_DIR$path" ] || fail "missing wireless tool: $path"
 done
 
