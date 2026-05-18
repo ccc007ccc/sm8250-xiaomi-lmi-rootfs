@@ -575,7 +575,10 @@ set +e
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 LOG=/var/log/lmi-wireless-reprobe.log
-mkdir -p /var/log
+PERSIST_MOUNT=/mnt/lmi-persist
+WLAN_MAC=
+BT_MAC=
+mkdir -p /var/log "$PERSIST_MOUNT"
 
 emit() {
   MSG="LMI_WIRELESS $*"
@@ -583,19 +586,82 @@ emit() {
   [ -e /dev/pmsg0 ] && printf '%s\n' "$MSG" > /dev/pmsg0 2>/dev/null || true
 }
 
-fix_wifi_mac() {
-  IFACE=$1
-  ADDR=$(cat "/sys/class/net/$IFACE/address" 2>/dev/null)
-  [ "$ADDR" = "00:00:00:00:00:00" ] || return 0
+find_part() {
+  LABEL=$1
+  for DEV in "/dev/disk/by-partlabel/$LABEL" "/dev/block/by-name/$LABEL"; do
+    [ -e "$DEV" ] && readlink -f "$DEV" && return 0
+  done
+  blkid -t "PARTLABEL=$LABEL" -o device 2>/dev/null | head -n 1
+}
 
+format_mac() {
+  HEX=$1
+  printf '%s:%s:%s:%s:%s:%s' \
+    "$(printf '%s' "$HEX" | cut -c1-2)" \
+    "$(printf '%s' "$HEX" | cut -c3-4)" \
+    "$(printf '%s' "$HEX" | cut -c5-6)" \
+    "$(printf '%s' "$HEX" | cut -c7-8)" \
+    "$(printf '%s' "$HEX" | cut -c9-10)" \
+    "$(printf '%s' "$HEX" | cut -c11-12)"
+}
+
+load_wireless_identity() {
+  PERSIST_DEV=$(find_part persist)
+  [ -n "$PERSIST_DEV" ] || {
+    emit "identity_skip missing_persist_part"
+    return 0
+  }
+
+  mountpoint -q "$PERSIST_MOUNT" || mount -o ro "$PERSIST_DEV" "$PERSIST_MOUNT" 2>>"$LOG"
+  MAC_FILE="$PERSIST_MOUNT/wlan_mac.bin"
+  [ -r "$MAC_FILE" ] || {
+    emit "identity_skip missing_wlan_mac_bin"
+    umount "$PERSIST_MOUNT" 2>/dev/null || true
+    return 0
+  }
+
+  MAC_HEX=$(tr -d '\000\r\n' < "$MAC_FILE" | sed -n 's/.*=\([0-9A-Fa-f]\{12\}\).*/\1/p' | head -n 1 | tr 'A-F' 'a-f')
+  if [ ${#MAC_HEX} -eq 12 ] && [ "$MAC_HEX" != "000000000000" ] && [ "$MAC_HEX" != "ffffffffffff" ]; then
+    WLAN_MAC=$(format_mac "$MAC_HEX")
+    PREFIX=$(printf '%s' "$MAC_HEX" | cut -c1-10)
+    LAST_HEX=$(printf '%s' "$MAC_HEX" | cut -c11-12)
+    LAST=$((0x$LAST_HEX + 1))
+    [ "$LAST" -gt 255 ] && LAST=0
+    BT_HEX=$(printf '%s%02x' "$PREFIX" "$LAST")
+    BT_MAC=$(format_mac "$BT_HEX")
+    emit "identity_loaded wlan_mac=$WLAN_MAC bt_addr=$BT_MAC"
+  else
+    emit "identity_skip invalid_wlan_mac_bin"
+  fi
+
+  umount "$PERSIST_MOUNT" 2>/dev/null || true
+}
+
+fallback_wifi_mac() {
   MID=$(tr -dc '0-9a-f' < /etc/machine-id 2>/dev/null | head -c 10)
   [ ${#MID} -eq 10 ] || MID=0063910001
-  MAC=$(printf '02:%s:%s:%s:%s:%s' \
+  printf '02:%s:%s:%s:%s:%s' \
     "$(printf '%s' "$MID" | cut -c1-2)" \
     "$(printf '%s' "$MID" | cut -c3-4)" \
     "$(printf '%s' "$MID" | cut -c5-6)" \
     "$(printf '%s' "$MID" | cut -c7-8)" \
-    "$(printf '%s' "$MID" | cut -c9-10)")
+    "$(printf '%s' "$MID" | cut -c9-10)"
+}
+
+fix_wifi_mac() {
+  IFACE=$1
+  ADDR=$(cat "/sys/class/net/$IFACE/address" 2>/dev/null)
+  [ -n "$ADDR" ] || return 0
+
+  if [ -n "$WLAN_MAC" ]; then
+    [ "$ADDR" = "$WLAN_MAC" ] && return 0
+    MAC=$WLAN_MAC
+  else
+    [ "$ADDR" = "00:00:00:00:00:00" ] || return 0
+    MAC=$(fallback_wifi_mac)
+  fi
+
+  ip link set dev "$IFACE" down 2>>"$LOG" || true
   ip link set dev "$IFACE" address "$MAC" 2>>"$LOG" && emit "wifi_mac_set iface=$IFACE mac=$MAC"
 }
 
@@ -636,6 +702,20 @@ bind_wifi() {
   done
 }
 
+bt_is_raw() {
+  hciconfig hci0 2>/dev/null | grep -q RAW
+}
+
+set_bt_public_addr() {
+  [ -n "$BT_MAC" ] || return 1
+  command -v btmgmt >/dev/null 2>&1 || return 1
+  btmgmt -i 0 public-addr "$BT_MAC" >>"$LOG" 2>&1 && {
+    emit "bt_addr_set hci0=$BT_MAC"
+    return 0
+  }
+  return 1
+}
+
 bind_bt() {
   [ -e /usr/lib/firmware/qca/htbtfw20.tlv ] || {
     emit "bt_skip missing_htbtfw20"
@@ -643,14 +723,30 @@ bind_bt() {
   }
   [ -e /sys/bus/serial/drivers/hci_uart_qca/bind ] || return 0
 
+  if [ -e /sys/class/bluetooth/hci0 ]; then
+    if bt_is_raw; then
+      set_bt_public_addr && return 0
+    else
+      emit "bt_skip hci0_configured"
+      return 0
+    fi
+  fi
+
   if [ -e /sys/bus/serial/devices/serial0-0/driver/unbind ]; then
     echo serial0-0 > /sys/bus/serial/devices/serial0-0/driver/unbind 2>>"$LOG"
     sleep 1
   fi
   echo serial0-0 > /sys/bus/serial/drivers/hci_uart_qca/bind 2>>"$LOG"
   emit "bt_rebind serial0-0"
+  I=0
+  while [ "$I" -lt 10 ]; do
+    [ -e /sys/class/bluetooth/hci0 ] && set_bt_public_addr && return 0
+    sleep 1
+    I=$((I + 1))
+  done
 }
 
+load_wireless_identity
 bind_wifi
 bind_bt
 emit "done"
