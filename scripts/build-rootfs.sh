@@ -8,7 +8,7 @@ SUITE=${SUITE:-noble}
 ARCH=${ARCH:-arm64}
 MIRROR=${MIRROR:-http://ports.ubuntu.com/ubuntu-ports}
 FORCE=${FORCE:-0}
-PACKAGES=${PACKAGES:-systemd-sysv udev dbus login bash util-linux e2fsprogs procps iproute2 kmod sudo ca-certificates pciutils iw rfkill wireless-regdb bluez bluetooth wpasupplicant openssh-server systemd-resolved}
+PACKAGES=${PACKAGES:-systemd-sysv udev dbus login bash util-linux e2fsprogs procps iproute2 kmod sudo ca-certificates linux-firmware pciutils iw rfkill wireless-regdb bluez bluetooth wpasupplicant openssh-server systemd-resolved python3 libdrm2 libgbm1 libegl1 libgles2 libgl1-mesa-dri mesa-utils kmscube libdrm-tests drm-info}
 FIRMWARE_SRC_DIR=${FIRMWARE_SRC_DIR:-"$REPO_ROOT/local/firmware"}
 LOCAL_ENV=${LOCAL_ENV:-"$REPO_ROOT/local/rootfs.env"}
 SSH_AUTHORIZED_KEYS=${SSH_AUTHORIZED_KEYS:-"$REPO_ROOT/local/authorized_keys"}
@@ -170,6 +170,13 @@ install_firmware() {
 }
 
 install_firmware
+
+install_lmi_tools() {
+  install -D -m 0755 "$REPO_ROOT/files/usr/local/bin/lmi-touch-refresh-test" \
+    "$WORK_DIR/usr/local/bin/lmi-touch-refresh-test"
+}
+
+install_lmi_tools
 
 configure_networking() {
   mkdir -p "$WORK_DIR/etc/systemd/network"
@@ -349,8 +356,7 @@ chmod 0755 "$WORK_DIR/usr/local/sbin/lmi-console-report"
 cat > "$WORK_DIR/etc/systemd/system/lmi-console-report.service" <<'EOF'
 [Unit]
 Description=LMI no-input console diagnostics
-After=local-fs.target systemd-remount-fs.service systemd-udev-settle.service
-Wants=systemd-udev-settle.service
+After=local-fs.target systemd-remount-fs.service
 
 [Service]
 Type=simple
@@ -554,13 +560,11 @@ chmod 0755 "$WORK_DIR/usr/local/sbin/lmi-firmware-import"
 cat > "$WORK_DIR/etc/systemd/system/lmi-firmware-import.service" <<'EOF'
 [Unit]
 Description=LMI import firmware from stock partitions
-After=local-fs.target systemd-udev-settle.service
-Wants=systemd-udev-settle.service
+After=local-fs.target
 Before=lmi-wireless-reprobe.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+Type=simple
 ExecStart=/usr/local/sbin/lmi-firmware-import
 StandardOutput=journal+console
 StandardError=journal+console
@@ -756,12 +760,11 @@ chmod 0755 "$WORK_DIR/usr/local/sbin/lmi-wireless-reprobe"
 cat > "$WORK_DIR/etc/systemd/system/lmi-wireless-reprobe.service" <<'EOF'
 [Unit]
 Description=LMI wireless firmware reprobe
-After=local-fs.target systemd-udev-settle.service lmi-firmware-import.service
-Wants=systemd-udev-settle.service lmi-firmware-import.service
+After=local-fs.target lmi-firmware-import.service
+Wants=lmi-firmware-import.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+Type=simple
 ExecStart=/usr/local/sbin/lmi-wireless-reprobe
 StandardOutput=journal+console
 StandardError=journal+console
@@ -813,27 +816,16 @@ done
 }
 
 ip link set dev "$IFACE" up >>"$LOG" 2>&1 || true
-if [ ! -S "/run/wpa_supplicant/$IFACE" ]; then
-  wpa_supplicant -B -i "$IFACE" -c "$CONF" -f /var/log/lmi-wpa_supplicant.log >>"$LOG" 2>&1
-  emit "wpa_start iface=$IFACE rc=$?"
-fi
 networkctl reload >>"$LOG" 2>&1 || true
 networkctl reconfigure "$IFACE" >>"$LOG" 2>&1 || true
 
-I=0
-while [ "$I" -lt 60 ]; do
-  WPA_STATE=$(wpa_cli -i "$IFACE" status 2>/dev/null | awk -F= '/^wpa_state=/ { print $2 }')
-  ADDR=$(ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{ print $4 }' | head -n 1)
-  if [ -n "$ADDR" ]; then
-    emit "ready iface=$IFACE state=$WPA_STATE addr=$ADDR"
-    exit 0
-  fi
-  sleep 1
-  I=$((I + 1))
-done
+if [ -S "/run/wpa_supplicant/$IFACE" ]; then
+  emit "wpa_already_running iface=$IFACE"
+  while true; do sleep 3600; done
+fi
 
-emit "timeout iface=$IFACE state=$WPA_STATE"
-exit 0
+emit "wpa_exec iface=$IFACE"
+exec wpa_supplicant -i "$IFACE" -c "$CONF" -f /var/log/lmi-wpa_supplicant.log
 EOF
 chmod 0755 "$WORK_DIR/usr/local/sbin/lmi-wifi-connect"
 
@@ -842,12 +834,12 @@ cat > "$WORK_DIR/etc/systemd/system/lmi-wifi-connect.service" <<'EOF'
 Description=LMI Wi-Fi connection
 After=lmi-wireless-reprobe.service systemd-networkd.service systemd-resolved.service
 Wants=lmi-wireless-reprobe.service systemd-networkd.service systemd-resolved.service
-Before=ssh.service
 
 [Service]
-Type=oneshot
+Type=simple
 ExecStart=/usr/local/sbin/lmi-wifi-connect
-RemainAfterExit=yes
+Restart=on-failure
+RestartSec=2
 StandardOutput=journal+console
 StandardError=journal+console
 

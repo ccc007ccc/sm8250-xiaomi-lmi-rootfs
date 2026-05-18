@@ -1,0 +1,521 @@
+#!/usr/bin/env python3
+import argparse
+import ctypes
+import fcntl
+import mmap
+import os
+import select
+import struct
+import sys
+import time
+from ctypes import POINTER, c_char, c_int, c_uint8, c_uint16, c_uint32, c_uint64
+
+WIDTH = 1080
+HEIGHT = 2400
+EV_SYN = 0x00
+EV_KEY = 0x01
+EV_ABS = 0x03
+SYN_REPORT = 0
+KEY_ESC = 1
+KEY_Q = 16
+ABS_X = 0x00
+ABS_Y = 0x01
+ABS_MT_SLOT = 0x2f
+ABS_MT_POSITION_X = 0x35
+ABS_MT_POSITION_Y = 0x36
+ABS_MT_TRACKING_ID = 0x39
+DRM_MODE_CONNECTED = 1
+DRM_IOCTL_BASE = ord("d")
+DRM_COMMAND_BASE = 0x40
+DRM_IOCTL_MODE_CREATE_DUMB_NR = 0xB2
+DRM_IOCTL_MODE_MAP_DUMB_NR = 0xB3
+DRM_IOCTL_MODE_DESTROY_DUMB_NR = 0xB4
+WHITE = 0x00FFFFFF
+BLACK = 0x00000000
+GRAY = 0x00D0D0D0
+DARK = 0x00404040
+ORANGE = 0x00008CFF
+BLUE = 0x00FF6630
+GREEN = 0x0040B000
+PURPLE = 0x00FF40C0
+RED = 0x002030E8
+CYAN = 0x00C0B000
+YELLOW = 0x0000B8F0
+COLORS = [BLUE, GREEN, PURPLE, RED, CYAN, YELLOW, 0x00AA55FF, 0x00CC8800]
+EVENT_STRUCT = "llHHi"
+EVENT_SIZE = struct.calcsize(EVENT_STRUCT)
+
+
+class DrmModeModeInfo(ctypes.Structure):
+    _fields_ = [
+        ("clock", c_uint32),
+        ("hdisplay", c_uint16),
+        ("hsync_start", c_uint16),
+        ("hsync_end", c_uint16),
+        ("htotal", c_uint16),
+        ("hskew", c_uint16),
+        ("vdisplay", c_uint16),
+        ("vsync_start", c_uint16),
+        ("vsync_end", c_uint16),
+        ("vtotal", c_uint16),
+        ("vscan", c_uint16),
+        ("vrefresh", c_uint32),
+        ("flags", c_uint32),
+        ("type", c_uint32),
+        ("name", c_char * 32),
+    ]
+
+
+class DrmModeRes(ctypes.Structure):
+    _fields_ = [
+        ("count_fbs", c_int),
+        ("fbs", POINTER(c_uint32)),
+        ("count_crtcs", c_int),
+        ("crtcs", POINTER(c_uint32)),
+        ("count_connectors", c_int),
+        ("connectors", POINTER(c_uint32)),
+        ("count_encoders", c_int),
+        ("encoders", POINTER(c_uint32)),
+        ("min_width", c_uint32),
+        ("max_width", c_uint32),
+        ("min_height", c_uint32),
+        ("max_height", c_uint32),
+    ]
+
+
+class DrmModeConnector(ctypes.Structure):
+    _fields_ = [
+        ("connector_id", c_uint32),
+        ("encoder_id", c_uint32),
+        ("connector_type", c_uint32),
+        ("connector_type_id", c_uint32),
+        ("connection", c_uint32),
+        ("mmWidth", c_uint32),
+        ("mmHeight", c_uint32),
+        ("subpixel", c_uint32),
+        ("count_modes", c_int),
+        ("modes", POINTER(DrmModeModeInfo)),
+        ("count_props", c_int),
+        ("props", POINTER(c_uint32)),
+        ("prop_values", POINTER(c_uint64)),
+        ("count_encoders", c_int),
+        ("encoders", POINTER(c_uint32)),
+    ]
+
+
+class DrmModeEncoder(ctypes.Structure):
+    _fields_ = [
+        ("encoder_id", c_uint32),
+        ("encoder_type", c_uint32),
+        ("crtc_id", c_uint32),
+        ("possible_crtcs", c_uint32),
+        ("possible_clones", c_uint32),
+    ]
+
+
+class DrmModeCrtc(ctypes.Structure):
+    _fields_ = [
+        ("crtc_id", c_uint32),
+        ("buffer_id", c_uint32),
+        ("x", c_uint32),
+        ("y", c_uint32),
+        ("width", c_uint32),
+        ("height", c_uint32),
+        ("mode_valid", c_int),
+        ("mode", DrmModeModeInfo),
+        ("gamma_size", c_int),
+    ]
+
+
+class CreateDumb(ctypes.Structure):
+    _fields_ = [
+        ("height", c_uint32),
+        ("width", c_uint32),
+        ("bpp", c_uint32),
+        ("flags", c_uint32),
+        ("handle", c_uint32),
+        ("pitch", c_uint32),
+        ("size", c_uint64),
+    ]
+
+
+class MapDumb(ctypes.Structure):
+    _fields_ = [("handle", c_uint32), ("pad", c_uint32), ("offset", c_uint64)]
+
+
+class DestroyDumb(ctypes.Structure):
+    _fields_ = [("handle", c_uint32)]
+
+
+def ioctl_number(direction, request_type, nr, size):
+    return (direction << 30) | (size << 16) | (request_type << 8) | nr
+
+
+def drm_iowr(nr, typ):
+    return ioctl_number(3, DRM_IOCTL_BASE, nr, ctypes.sizeof(typ))
+
+
+DRM_IOCTL_MODE_CREATE_DUMB = drm_iowr(DRM_IOCTL_MODE_CREATE_DUMB_NR, CreateDumb)
+DRM_IOCTL_MODE_MAP_DUMB = drm_iowr(DRM_IOCTL_MODE_MAP_DUMB_NR, MapDumb)
+DRM_IOCTL_MODE_DESTROY_DUMB = drm_iowr(DRM_IOCTL_MODE_DESTROY_DUMB_NR, DestroyDumb)
+
+
+def load_libdrm():
+    lib = ctypes.CDLL("libdrm.so.2")
+    lib.drmModeGetResources.argtypes = [c_int]
+    lib.drmModeGetResources.restype = POINTER(DrmModeRes)
+    lib.drmModeFreeResources.argtypes = [POINTER(DrmModeRes)]
+    lib.drmModeGetConnector.argtypes = [c_int, c_uint32]
+    lib.drmModeGetConnector.restype = POINTER(DrmModeConnector)
+    lib.drmModeFreeConnector.argtypes = [POINTER(DrmModeConnector)]
+    lib.drmModeGetEncoder.argtypes = [c_int, c_uint32]
+    lib.drmModeGetEncoder.restype = POINTER(DrmModeEncoder)
+    lib.drmModeFreeEncoder.argtypes = [POINTER(DrmModeEncoder)]
+    lib.drmModeGetCrtc.argtypes = [c_int, c_uint32]
+    lib.drmModeGetCrtc.restype = POINTER(DrmModeCrtc)
+    lib.drmModeFreeCrtc.argtypes = [POINTER(DrmModeCrtc)]
+    lib.drmModeAddFB.argtypes = [c_int, c_uint32, c_uint32, c_uint8, c_uint8, c_uint32, c_uint32, POINTER(c_uint32)]
+    lib.drmModeAddFB.restype = c_int
+    lib.drmModeRmFB.argtypes = [c_int, c_uint32]
+    lib.drmModeRmFB.restype = c_int
+    lib.drmModeSetCrtc.argtypes = [c_int, c_uint32, c_uint32, c_uint32, c_uint32, POINTER(c_uint32), c_int, POINTER(DrmModeModeInfo)]
+    lib.drmModeSetCrtc.restype = c_int
+    return lib
+
+
+class KmsDisplay:
+    def __init__(self, device):
+        self.lib = load_libdrm()
+        self.fd = os.open(device, os.O_RDWR | os.O_CLOEXEC)
+        self.connector_id = None
+        self.crtc_id = None
+        self.connector_array = None
+        self.original = None
+        self.modes = {}
+        self.width = WIDTH
+        self.height = HEIGHT
+        self.pitch = 0
+        self.size = 0
+        self.handle = 0
+        self.fb_id = c_uint32(0)
+        self.map = None
+        self._find_connector()
+        self._create_buffer()
+        self.white_frame = self.pixel(WHITE) * (self.width * self.height)
+
+    @staticmethod
+    def pixel(color):
+        return struct.pack("<I", color)
+
+    def _find_connector(self):
+        res = self.lib.drmModeGetResources(self.fd)
+        if not res:
+            raise RuntimeError("drmModeGetResources failed")
+        try:
+            for i in range(res.contents.count_connectors):
+                conn_id = res.contents.connectors[i]
+                conn = self.lib.drmModeGetConnector(self.fd, conn_id)
+                if not conn:
+                    continue
+                try:
+                    c = conn.contents
+                    if c.connection != DRM_MODE_CONNECTED or c.count_modes <= 0:
+                        continue
+                    enc_id = c.encoder_id or (c.encoders[0] if c.count_encoders else 0)
+                    enc = self.lib.drmModeGetEncoder(self.fd, enc_id) if enc_id else None
+                    if not enc:
+                        continue
+                    try:
+                        self.connector_id = c.connector_id
+                        self.crtc_id = enc.contents.crtc_id or res.contents.crtcs[0]
+                        self.connector_array = (c_uint32 * 1)(self.connector_id)
+                        for j in range(c.count_modes):
+                            mode = c.modes[j]
+                            if mode.hdisplay == WIDTH and mode.vdisplay == HEIGHT:
+                                self.modes[int(mode.vrefresh)] = mode
+                        if 60 in self.modes and 77 in self.modes:
+                            self.original = self.lib.drmModeGetCrtc(self.fd, self.crtc_id)
+                            return
+                    finally:
+                        self.lib.drmModeFreeEncoder(enc)
+                finally:
+                    self.lib.drmModeFreeConnector(conn)
+        finally:
+            self.lib.drmModeFreeResources(res)
+        raise RuntimeError("connected DSI connector with 60/77Hz modes not found")
+
+    def _create_buffer(self):
+        create = CreateDumb(height=self.height, width=self.width, bpp=32)
+        fcntl.ioctl(self.fd, DRM_IOCTL_MODE_CREATE_DUMB, create)
+        self.handle = create.handle
+        self.pitch = create.pitch
+        self.size = create.size
+        fb_id = c_uint32(0)
+        ret = self.lib.drmModeAddFB(self.fd, self.width, self.height, 24, 32, self.pitch, self.handle, ctypes.byref(fb_id))
+        if ret != 0:
+            raise OSError(ctypes.get_errno(), "drmModeAddFB failed")
+        self.fb_id = fb_id
+        map_req = MapDumb(handle=self.handle)
+        fcntl.ioctl(self.fd, DRM_IOCTL_MODE_MAP_DUMB, map_req)
+        self.map = mmap.mmap(self.fd, self.size, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=map_req.offset)
+
+    def set_rate(self, rate):
+        mode = self.modes.get(rate)
+        if not mode:
+            return False
+        ret = self.lib.drmModeSetCrtc(self.fd, self.crtc_id, self.fb_id.value, 0, 0, self.connector_array, 1, ctypes.byref(mode))
+        return ret == 0
+
+    def restore(self):
+        if self.original:
+            orig = self.original.contents
+            if orig.mode_valid:
+                self.lib.drmModeSetCrtc(self.fd, orig.crtc_id, orig.buffer_id, orig.x, orig.y, self.connector_array, 1, ctypes.byref(orig.mode))
+            self.lib.drmModeFreeCrtc(self.original)
+            self.original = None
+
+    def close(self):
+        try:
+            self.restore()
+        finally:
+            if self.map:
+                self.map.close()
+                self.map = None
+            if self.fb_id.value:
+                self.lib.drmModeRmFB(self.fd, self.fb_id.value)
+            if self.handle:
+                fcntl.ioctl(self.fd, DRM_IOCTL_MODE_DESTROY_DUMB, DestroyDumb(handle=self.handle))
+            os.close(self.fd)
+
+    def clear(self):
+        self.map.seek(0)
+        self.map.write(self.white_frame)
+
+    def rect(self, x, y, w, h, color):
+        x = max(0, min(self.width, int(x)))
+        y = max(0, min(self.height, int(y)))
+        w = max(0, min(self.width - x, int(w)))
+        h = max(0, min(self.height - y, int(h)))
+        if not w or not h:
+            return
+        row = self.pixel(color) * w
+        for yy in range(y, y + h):
+            start = yy * self.pitch + x * 4
+            self.map[start:start + w * 4] = row
+
+    def circle(self, cx, cy, r, color):
+        r2 = r * r
+        for dy in range(-r, r + 1):
+            dx = int((r2 - dy * dy) ** 0.5)
+            self.rect(cx - dx, cy + dy, dx * 2 + 1, 1, color)
+
+    def line(self, x0, y0, x1, y1, color, thick=5):
+        dx = abs(x1 - x0)
+        dy = -abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
+        while True:
+            self.circle(x0, y0, thick, color)
+            if x0 == x1 and y0 == y1:
+                break
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x0 += sx
+            if e2 <= dx:
+                err += dx
+                y0 += sy
+
+
+DIGITS = {
+    "0": (1, 1, 1, 1, 1, 1, 0),
+    "1": (0, 1, 1, 0, 0, 0, 0),
+    "2": (1, 1, 0, 1, 1, 0, 1),
+    "3": (1, 1, 1, 1, 0, 0, 1),
+    "4": (0, 1, 1, 0, 0, 1, 1),
+    "5": (1, 0, 1, 1, 0, 1, 1),
+    "6": (1, 0, 1, 1, 1, 1, 1),
+    "7": (1, 1, 1, 0, 0, 0, 0),
+    "8": (1, 1, 1, 1, 1, 1, 1),
+    "9": (1, 1, 1, 1, 0, 1, 1),
+}
+
+
+def draw_digit(d, x, y, s, disp, color=BLACK):
+    seg = DIGITS[str(d)]
+    t = max(5, s // 6)
+    w = s
+    h = s * 2
+    coords = [
+        (x + t, y, w - 2 * t, t),
+        (x + w - t, y + t, t, h // 2 - t),
+        (x + w - t, y + h // 2, t, h // 2 - t),
+        (x + t, y + h - t, w - 2 * t, t),
+        (x, y + h // 2, t, h // 2 - t),
+        (x, y + t, t, h // 2 - t),
+        (x + t, y + h // 2 - t // 2, w - 2 * t, t),
+    ]
+    for on, rect in zip(seg, coords):
+        if on:
+            disp.rect(*rect, color)
+
+
+def draw_number(n, cx, cy, disp, scale=34):
+    text = str(n)
+    total = len(text) * scale + (len(text) - 1) * (scale // 3)
+    x = cx - total // 2
+    y = cy - scale
+    for ch in text:
+        draw_digit(ch, x, y, scale, disp)
+        x += scale + scale // 3
+
+
+def button_rects():
+    w = 310
+    h = 120
+    gap = 80
+    y = HEIGHT - h - 60
+    x = (WIDTH - w * 2 - gap) // 2
+    return {60: (x, y, w, h), 77: (x + w + gap, y, w, h)}
+
+
+def inside(point, rect):
+    x, y = point
+    rx, ry, rw, rh = rect
+    return rx <= x < rx + rw and ry <= y < ry + rh
+
+
+def open_input(path):
+    if path:
+        return os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    for event in sorted(os.listdir("/dev/input")):
+        if not event.startswith("event"):
+            continue
+        name_path = f"/sys/class/input/{event}/device/name"
+        try:
+            name = open(name_path, encoding="utf-8").read().strip().lower()
+        except OSError:
+            name = ""
+        if "ft" in name or "touch" in name:
+            return os.open(f"/dev/input/{event}", os.O_RDONLY | os.O_NONBLOCK)
+    return os.open("/dev/input/event0", os.O_RDONLY | os.O_NONBLOCK)
+
+
+def process_events(fd, slots, changed, button_slots, kms, current_rate):
+    quit_now = False
+    buttons = button_rects()
+    while True:
+        try:
+            data = os.read(fd, EVENT_SIZE * 64)
+        except BlockingIOError:
+            break
+        if not data:
+            break
+        for off in range(0, len(data) - EVENT_SIZE + 1, EVENT_SIZE):
+            _, _, typ, code, value = struct.unpack(EVENT_STRUCT, data[off:off + EVENT_SIZE])
+            if typ == EV_KEY and value and code in (KEY_ESC, KEY_Q):
+                quit_now = True
+            elif typ != EV_ABS:
+                continue
+            slot = slots.setdefault("slot", 0)
+            if code == ABS_MT_SLOT:
+                slots["slot"] = value
+            elif code == ABS_MT_TRACKING_ID:
+                if value < 0:
+                    slots.pop(slot, None)
+                    button_slots.discard(slot)
+                else:
+                    slots[slot] = {"id": value, "x": None, "y": None, "trail": []}
+            elif code == ABS_MT_POSITION_X and slot in slots:
+                slots[slot]["x"] = max(0, min(WIDTH - 1, value))
+                changed.add(slot)
+            elif code == ABS_MT_POSITION_Y and slot in slots:
+                slots[slot]["y"] = max(0, min(HEIGHT - 1, value))
+                changed.add(slot)
+            elif code == ABS_X:
+                slots.setdefault(0, {"id": 0, "x": 0, "y": 0, "trail": []})["x"] = max(0, min(WIDTH - 1, value))
+                changed.add(0)
+            elif code == ABS_Y:
+                slots.setdefault(0, {"id": 0, "x": 0, "y": 0, "trail": []})["y"] = max(0, min(HEIGHT - 1, value))
+                changed.add(0)
+    for slot in list(changed):
+        touch = slots.get(slot)
+        if not touch or touch.get("x") is None or touch.get("y") is None:
+            continue
+        pt = (touch["x"], touch["y"])
+        if not touch["trail"]:
+            for rate, rect in buttons.items():
+                if inside(pt, rect):
+                    if rate != current_rate[0]:
+                        current_rate[0] = rate if kms.set_rate(rate) else current_rate[0]
+                    button_slots.add(slot)
+                    break
+        if slot not in button_slots:
+            touch["trail"].append(pt)
+            if len(touch["trail"]) > 350:
+                touch["trail"] = touch["trail"][-350:]
+    changed.clear()
+    return quit_now
+
+
+def draw_scene(kms, slots, current_rate, frame):
+    kms.clear()
+    size = 150
+    margin = 60
+    travel = WIDTH - size - margin * 2
+    x = margin + int((1 + __import__("math").sin(frame * 0.045)) * 0.5 * travel)
+    kms.rect(x, 420, size, size, ORANGE)
+    buttons = button_rects()
+    for rate, rect in buttons.items():
+        color = 0x00A0FFA0 if rate == current_rate[0] else GRAY
+        kms.rect(*rect, color)
+        rx, ry, rw, rh = rect
+        kms.rect(rx, ry, rw, 4, DARK)
+        kms.rect(rx, ry + rh - 4, rw, 4, DARK)
+        kms.rect(rx, ry, 4, rh, DARK)
+        kms.rect(rx + rw - 4, ry, 4, rh, DARK)
+        draw_number(rate, rx + rw // 2, ry + rh // 2, kms)
+    for slot, touch in slots.items():
+        if not isinstance(slot, int):
+            continue
+        points = touch.get("trail") or []
+        color = COLORS[slot % len(COLORS)]
+        for a, b in zip(points, points[1:]):
+            kms.line(a[0], a[1], b[0], b[1], color)
+        if points:
+            kms.circle(points[-1][0], points[-1][1], 16, color)
+
+
+def run(args):
+    kms = KmsDisplay(args.drm)
+    input_fd = open_input(args.input)
+    current_rate = [60]
+    slots = {"slot": 0}
+    changed = set()
+    button_slots = set()
+    frame = 0
+    try:
+        kms.set_rate(60)
+        while True:
+            if process_events(input_fd, slots, changed, button_slots, kms, current_rate):
+                break
+            draw_scene(kms, slots, current_rate, frame)
+            frame += 1
+            time.sleep(1 / max(30, min(args.fps, 120)))
+    finally:
+        os.close(input_fd)
+        kms.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="LMI DRM touch and 60/77Hz refresh-rate test")
+    parser.add_argument("--drm", default="/dev/dri/card0")
+    parser.add_argument("--input", default=None)
+    parser.add_argument("--fps", type=int, default=77)
+    args = parser.parse_args()
+    run(args)
+
+
+if __name__ == "__main__":
+    main()
