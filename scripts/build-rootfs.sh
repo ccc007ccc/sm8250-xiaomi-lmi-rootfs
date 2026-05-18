@@ -1,0 +1,416 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+OUT_DIR=${OUT_DIR:-"$REPO_ROOT/out"}
+ROOTFS_DIR=${ROOTFS_DIR:-"$OUT_DIR/rootfs"}
+SUITE=${SUITE:-noble}
+ARCH=${ARCH:-arm64}
+MIRROR=${MIRROR:-http://ports.ubuntu.com/ubuntu-ports}
+FORCE=${FORCE:-0}
+PACKAGES=${PACKAGES:-systemd-sysv udev dbus login bash util-linux e2fsprogs procps iproute2 kmod sudo ca-certificates}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'missing required command: %s\n' "$1" >&2
+    exit 1
+  }
+}
+
+if [ "$(id -u)" -ne 0 ]; then
+  exec sudo -E "$0" "$@"
+fi
+
+unset http_proxy https_proxy ftp_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY NO_PROXY
+
+require_cmd debootstrap
+require_cmd qemu-aarch64-static
+require_cmd chroot
+require_cmd mount
+require_cmd umount
+require_cmd mknod
+require_cmd ln
+require_cmd awk
+require_cmd sort
+
+WORK_DIR="$ROOTFS_DIR.tmp"
+
+if [ -e "$ROOTFS_DIR" ] && [ "$FORCE" != 1 ]; then
+  printf 'rootfs already exists: %s\nset FORCE=1 to rebuild\n' "$ROOTFS_DIR" >&2
+  exit 1
+fi
+
+mounts_under() {
+  TARGET="$1"
+  awk -v target="$TARGET" '$5 == target || index($5, target "/") == 1 { print $5 }' /proc/self/mountinfo
+}
+
+cleanup_mounts() {
+  RC=0
+  set +e
+  mounts_under "$WORK_DIR" | sort -r | while IFS= read -r MP; do
+    umount -R "$MP" || umount -l "$MP" || RC=1
+  done
+  set -e
+  return "$RC"
+}
+
+assert_no_mounts() {
+  TARGET="$1"
+  MOUNTS=$(mounts_under "$TARGET")
+  if [ -n "$MOUNTS" ]; then
+    printf '%s\n' "$MOUNTS"
+    printf 'refusing to modify mounted rootfs path: %s\n' "$TARGET" >&2
+    exit 1
+  fi
+}
+
+trap 'cleanup_mounts || true' EXIT
+
+assert_no_mounts "$WORK_DIR"
+assert_no_mounts "$ROOTFS_DIR"
+rm -rf "$WORK_DIR"
+if [ "$FORCE" = 1 ]; then
+  rm -rf "$ROOTFS_DIR"
+fi
+mkdir -p "$OUT_DIR"
+
+debootstrap --arch="$ARCH" --foreign --variant=minbase "$SUITE" "$WORK_DIR" "$MIRROR"
+install -m 0755 "$(command -v qemu-aarch64-static)" "$WORK_DIR/usr/bin/qemu-aarch64-static"
+cp /etc/resolv.conf "$WORK_DIR/etc/resolv.conf"
+
+mount -t proc proc "$WORK_DIR/proc"
+mount -t sysfs sysfs "$WORK_DIR/sys"
+mount -t tmpfs tmpfs "$WORK_DIR/dev"
+mkdir -p "$WORK_DIR/dev/pts" "$WORK_DIR/dev/shm" "$WORK_DIR/run"
+mknod -m 666 "$WORK_DIR/dev/null" c 1 3
+mknod -m 666 "$WORK_DIR/dev/zero" c 1 5
+mknod -m 666 "$WORK_DIR/dev/full" c 1 7
+mknod -m 666 "$WORK_DIR/dev/random" c 1 8
+mknod -m 666 "$WORK_DIR/dev/urandom" c 1 9
+mknod -m 666 "$WORK_DIR/dev/tty" c 5 0
+mknod -m 600 "$WORK_DIR/dev/console" c 5 1
+mknod -m 666 "$WORK_DIR/dev/ptmx" c 5 2
+ln -sf /proc/self/fd "$WORK_DIR/dev/fd"
+ln -sf /proc/self/fd/0 "$WORK_DIR/dev/stdin"
+ln -sf /proc/self/fd/1 "$WORK_DIR/dev/stdout"
+ln -sf /proc/self/fd/2 "$WORK_DIR/dev/stderr"
+mount -t devpts devpts "$WORK_DIR/dev/pts"
+mount -t tmpfs tmpfs "$WORK_DIR/run"
+
+run_chroot() {
+  env -u http_proxy -u https_proxy -u ftp_proxy -u all_proxy -u no_proxy -u HTTP_PROXY -u HTTPS_PROXY -u FTP_PROXY -u ALL_PROXY -u NO_PROXY \
+    chroot "$WORK_DIR" /usr/bin/qemu-aarch64-static /bin/sh -c "$*"
+}
+
+run_chroot '/debootstrap/debootstrap --second-stage'
+
+cat > "$WORK_DIR/etc/apt/sources.list" <<EOF
+deb $MIRROR $SUITE main restricted universe multiverse
+deb $MIRROR $SUITE-updates main restricted universe multiverse
+deb $MIRROR $SUITE-security main restricted universe multiverse
+EOF
+
+cat > "$WORK_DIR/usr/sbin/policy-rc.d" <<'EOF'
+#!/bin/sh
+exit 101
+EOF
+chmod 0755 "$WORK_DIR/usr/sbin/policy-rc.d"
+
+run_chroot 'apt-get update'
+run_chroot "env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $PACKAGES"
+
+printf 'lmi-ubuntu\n' > "$WORK_DIR/etc/hostname"
+cat > "$WORK_DIR/etc/hosts" <<'EOF'
+127.0.0.1 localhost
+127.0.1.1 lmi-ubuntu
+
+::1 localhost ip6-localhost ip6-loopback
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+EOF
+
+cat > "$WORK_DIR/etc/fstab" <<'EOF'
+LABEL=ubuntu-rootfs / ext4 defaults,noatime 0 1
+EOF
+
+mkdir -p "$WORK_DIR/etc/systemd/system/getty@tty1.service.d"
+cat > "$WORK_DIR/etc/systemd/system/getty@tty1.service.d/autologin.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
+EOF
+
+cat > "$WORK_DIR/usr/local/sbin/lmi-firstboot-report" <<'EOF'
+#!/bin/sh
+OUT=/dev/tty0
+[ -e "$OUT" ] || OUT=/dev/console
+{
+  echo 'LMI Ubuntu 24.04 console rootfs'
+  uname -a
+  findmnt /
+  df -h /
+  systemctl --no-pager --failed || true
+} > "$OUT" 2>&1 || true
+EOF
+chmod 0755 "$WORK_DIR/usr/local/sbin/lmi-firstboot-report"
+
+cat > "$WORK_DIR/etc/systemd/system/lmi-firstboot-report.service" <<'EOF'
+[Unit]
+Description=LMI first boot console report
+After=local-fs.target systemd-remount-fs.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lmi-firstboot-report
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > "$WORK_DIR/usr/local/sbin/lmi-console-report" <<'EOF'
+#!/bin/sh
+set +e
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LOG=/var/log/lmi-console-report.log
+OUT=/dev/tty0
+[ -e "$OUT" ] || OUT=/dev/console
+mkdir -p /var/log /run/lmi
+
+emit() {
+  MSG="LMI_UBUNTU $*"
+  printf '%s\n' "$MSG" >> "$LOG"
+  printf '%s\n' "$MSG" > "$OUT" 2>/dev/null || true
+  [ -e /dev/pmsg0 ] && printf '%s\n' "$MSG" > /dev/pmsg0 2>/dev/null || true
+}
+
+run() {
+  emit "cmd_begin $*"
+  "$@" >> "$LOG" 2>&1
+  RC=$?
+  tail -n 20 "$LOG" > "$OUT" 2>/dev/null || true
+  emit "cmd_end rc=$RC $*"
+}
+
+emit "report_start"
+emit "kernel=$(uname -a)"
+emit "cmdline=$(cat /proc/cmdline 2>/dev/null)"
+run findmnt /
+run df -h /
+run lsblk
+run blkid
+run ip addr
+
+ROOT_SRC=$(findmnt -n -o SOURCE / 2>/dev/null)
+ROOT_DEV=$ROOT_SRC
+if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
+  ROOT_DEV=$(findfs LABEL=ubuntu-rootfs 2>/dev/null || true)
+fi
+ROOT_REAL=
+if [ -n "$ROOT_DEV" ]; then
+  ROOT_REAL=$(readlink -f "$ROOT_DEV" 2>/dev/null || printf '%s' "$ROOT_DEV")
+fi
+emit "root_source=$ROOT_SRC root_dev=$ROOT_DEV root_real=$ROOT_REAL"
+case "$ROOT_REAL" in
+  /dev/sda34|/dev/block/sda34|/dev/sda35|/dev/block/sda35)
+    emit "resize2fs_begin dev=$ROOT_DEV"
+    resize2fs "$ROOT_DEV" >> "$LOG" 2>&1
+    emit "resize2fs_end rc=$?"
+    run df -h /
+    ;;
+  *)
+    emit "resize2fs_skip unexpected_root=$ROOT_REAL"
+    ;;
+esac
+
+run sh -c "dmesg | grep -Ei 'ufshcd|sda3[45]|linuxroot|ubuntu-rootfs|ext4|systemd|drm|dsi|panel|error|fail|warn' | tail -n 160"
+
+I=0
+while [ "$I" -lt 10 ]; do
+  emit "alive seconds=$((I * 30)) root=$(findmnt -n -o SOURCE / 2>/dev/null) free=$(df -h / 2>/dev/null | tail -n 1)"
+  sleep 30
+  I=$((I + 1))
+done
+
+if [ -e /etc/lmi/no-autoreboot ]; then
+  emit "autoreboot_disabled marker=/etc/lmi/no-autoreboot"
+  exit 0
+fi
+
+emit "autoreboot_now after=300s"
+sync
+systemctl reboot -i || reboot -f
+EOF
+chmod 0755 "$WORK_DIR/usr/local/sbin/lmi-console-report"
+
+cat > "$WORK_DIR/etc/systemd/system/lmi-console-report.service" <<'EOF'
+[Unit]
+Description=LMI no-input console diagnostics
+After=local-fs.target systemd-remount-fs.service systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/lmi-console-report
+StandardInput=null
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > "$WORK_DIR/usr/local/sbin/lmi-usb-gadget" <<'EOF'
+#!/bin/sh
+set +e
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LOG=/var/log/lmi-usb-gadget.log
+OUT=/dev/tty0
+[ -e "$OUT" ] || OUT=/dev/console
+mkdir -p /var/log
+
+emit() {
+  MSG="LMI_USB $*"
+  printf '%s\n' "$MSG" >> "$LOG"
+  printf '%s\n' "$MSG" > "$OUT" 2>/dev/null || true
+  [ -e /dev/pmsg0 ] && printf '%s\n' "$MSG" > /dev/pmsg0 2>/dev/null || true
+}
+
+mountpoint -q /sys/kernel/config || mount -t configfs configfs /sys/kernel/config 2>>"$LOG"
+[ -d /sys/kernel/config/usb_gadget ] || {
+  emit "no_configfs_usb_gadget"
+  exit 0
+}
+
+modprobe libcomposite 2>>"$LOG" || true
+modprobe usb_f_acm 2>>"$LOG" || true
+modprobe usb_f_rndis 2>>"$LOG" || true
+
+I=0
+UDC=
+while [ "$I" -lt 60 ]; do
+  UDC=$(ls /sys/class/udc 2>/dev/null | head -n 1)
+  [ -n "$UDC" ] && break
+  sleep 1
+  I=$((I + 1))
+done
+
+if [ -z "$UDC" ]; then
+  emit "no_udc"
+  exit 0
+fi
+
+G=/sys/kernel/config/usb_gadget/lmi
+if [ -d "$G" ]; then
+  printf '' > "$G/UDC" 2>/dev/null || true
+fi
+
+mkdir -p "$G"
+printf '0x18d1' > "$G/idVendor"
+printf '0x4ee7' > "$G/idProduct"
+printf '0x0200' > "$G/bcdUSB"
+printf '0x0100' > "$G/bcdDevice"
+mkdir -p "$G/strings/0x409"
+printf 'lmi-mainline-ubuntu' > "$G/strings/0x409/serialnumber"
+printf 'Xiaomi' > "$G/strings/0x409/manufacturer"
+printf 'LMI Ubuntu debug gadget' > "$G/strings/0x409/product"
+mkdir -p "$G/configs/c.1/strings/0x409"
+printf 'ACM serial + RNDIS debug' > "$G/configs/c.1/strings/0x409/configuration"
+printf '250' > "$G/configs/c.1/MaxPower"
+
+mkdir -p "$G/functions/acm.usb0"
+ln -sf "$G/functions/acm.usb0" "$G/configs/c.1/acm.usb0"
+
+if mkdir -p "$G/functions/rndis.usb0" 2>>"$LOG"; then
+  printf '02:00:00:00:00:01' > "$G/functions/rndis.usb0/dev_addr" 2>/dev/null || true
+  printf '02:00:00:00:00:02' > "$G/functions/rndis.usb0/host_addr" 2>/dev/null || true
+  if [ -d "$G/functions/rndis.usb0/os_desc/interface.rndis" ]; then
+    printf 'RNDIS' > "$G/functions/rndis.usb0/os_desc/interface.rndis/compatible_id" 2>/dev/null || true
+    printf '5162001' > "$G/functions/rndis.usb0/os_desc/interface.rndis/sub_compatible_id" 2>/dev/null || true
+  fi
+  ln -sf "$G/functions/rndis.usb0" "$G/configs/c.1/rndis.usb0"
+  mkdir -p "$G/os_desc"
+  printf '1' > "$G/os_desc/use" 2>/dev/null || true
+  printf '0xcd' > "$G/os_desc/b_vendor_code" 2>/dev/null || true
+  printf 'MSFT100' > "$G/os_desc/qw_sign" 2>/dev/null || true
+  ln -sf "$G/configs/c.1" "$G/os_desc/c.1" 2>/dev/null || true
+fi
+
+printf '%s' "$UDC" > "$G/UDC" 2>>"$LOG" || {
+  emit "bind_failed udc=$UDC"
+  exit 0
+}
+
+I=0
+while [ "$I" -lt 20 ]; do
+  if ip link show usb0 >/dev/null 2>&1; then
+    ip addr add 192.168.7.2/24 dev usb0 2>/dev/null || true
+    ip link set usb0 up 2>/dev/null || true
+    break
+  fi
+  sleep 1
+  I=$((I + 1))
+done
+
+systemctl start serial-getty@ttyGS0.service 2>>"$LOG" || true
+emit "ready udc=$UDC serial=/dev/ttyGS0 addr=192.168.7.2/24"
+EOF
+chmod 0755 "$WORK_DIR/usr/local/sbin/lmi-usb-gadget"
+
+cat > "$WORK_DIR/etc/systemd/system/lmi-usb-gadget.service" <<'EOF'
+[Unit]
+Description=LMI USB gadget debug console
+After=local-fs.target sys-kernel-config.mount systemd-udevd.service
+Wants=sys-kernel-config.mount
+Before=serial-getty@ttyGS0.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/lmi-usb-gadget
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+mkdir -p "$WORK_DIR/etc/systemd/system/serial-getty@ttyGS0.service.d"
+cat > "$WORK_DIR/etc/systemd/system/serial-getty@ttyGS0.service.d/autologin.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear %I 115200 linux
+Type=idle
+EOF
+
+mkdir -p "$WORK_DIR/etc/systemd/system/multi-user.target.wants" "$WORK_DIR/etc/systemd/system/getty.target.wants" "$WORK_DIR/etc/lmi"
+touch "$WORK_DIR/etc/lmi/no-autoreboot"
+ln -sf /etc/systemd/system/lmi-firstboot-report.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-firstboot-report.service"
+ln -sf /etc/systemd/system/lmi-console-report.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-console-report.service"
+ln -sf /lib/systemd/system/serial-getty@.service "$WORK_DIR/etc/systemd/system/getty.target.wants/serial-getty@ttyGS0.service"
+ln -sf /lib/systemd/system/multi-user.target "$WORK_DIR/etc/systemd/system/default.target"
+for target in sleep.target suspend.target hibernate.target hybrid-sleep.target; do
+  ln -sf /dev/null "$WORK_DIR/etc/systemd/system/$target"
+done
+
+run_chroot 'passwd -d root'
+run_chroot 'apt-get clean'
+
+rm -f "$WORK_DIR/usr/sbin/policy-rc.d"
+rm -f "$WORK_DIR/usr/bin/qemu-aarch64-static"
+rm -f "$WORK_DIR/etc/machine-id" "$WORK_DIR/var/lib/dbus/machine-id"
+touch "$WORK_DIR/etc/machine-id"
+rm -rf "$WORK_DIR/var/lib/apt/lists/"* "$WORK_DIR/tmp/"* "$WORK_DIR/var/tmp/"*
+
+if ! cleanup_mounts; then
+  findmnt -R "$WORK_DIR" || true
+  printf 'failed to unmount rootfs runtime mounts\n' >&2
+  exit 1
+fi
+assert_no_mounts "$WORK_DIR"
+find "$WORK_DIR/proc" "$WORK_DIR/sys" "$WORK_DIR/dev" "$WORK_DIR/run" -mindepth 1 -xdev -exec rm -rf -- {} +
+trap - EXIT
+mv "$WORK_DIR" "$ROOTFS_DIR"
+printf 'rootfs ready: %s\n' "$ROOTFS_DIR"
