@@ -25,8 +25,8 @@ UNSAFE_DONE_RESTART=${UNSAFE_DONE_RESTART:-0}
 KS_PENDING_TIMEOUT=${KS_PENDING_TIMEOUT:-0}
 EMPTY_LIMIT=${EMPTY_LIMIT:-4}
 AFTER_MODE3_DELAY=${AFTER_MODE3_DELAY:-34}
-HOLD_AFTER_IMAGE=${HOLD_AFTER_IMAGE:-40}
-HOLD_AFTER_IMAGE_TIMEOUT=${HOLD_AFTER_IMAGE_TIMEOUT:-21600}
+HOLD_AFTER_IMAGE=${HOLD_AFTER_IMAGE:--1}
+HOLD_AFTER_IMAGE_TIMEOUT=${HOLD_AFTER_IMAGE_TIMEOUT:-0}
 KEEP_PREPARED_ON_RELEASE=${KEEP_PREPARED_ON_RELEASE:-0}
 KEEP_PREPARED_AFTER_DONE_RESP=${KEEP_PREPARED_AFTER_DONE_RESP:-0}
 READ_SIZE=${READ_SIZE:-4096}
@@ -53,7 +53,7 @@ fi
 {
   printf '[%s] start dev=%s modem=%s image34=%s image40=%s\n' "$(date +%H:%M:%S)" "$DEV" "$MODEM" "$IMAGE34" "$IMAGE40"
   printf '[%s] hold_after_image=%s hold_after_image_timeout=%s keep_prepared_on_release=%s keep_prepared_after_done_resp=%s unsafe_done_restart=%s restart_after_packet_delay=%s done_restart_delay=%s done_wait_timeout=%s done_resp_restart_delay=%s done_resp_follow_timeout=%s read_data_follow_timeout=%s read_data_follow_image=%s read_data_follow_min_offset=%s diag_state_path=%s diag_after_read_data_image=%s diag_after_read_data_min_offset=%s ks_pending_timeout=%s empty_limit=%s\n' "$(date +%H:%M:%S)" "$HOLD_AFTER_IMAGE" "$HOLD_AFTER_IMAGE_TIMEOUT" "$KEEP_PREPARED_ON_RELEASE" "$KEEP_PREPARED_AFTER_DONE_RESP" "$UNSAFE_DONE_RESTART" "$RESTART_AFTER_PACKET_DELAY" "$DONE_RESTART_DELAY" "$DONE_WAIT_TIMEOUT" "$DONE_RESP_RESTART_DELAY" "$DONE_RESP_FOLLOW_TIMEOUT" "$READ_DATA_FOLLOW_TIMEOUT" "$READ_DATA_FOLLOW_IMAGE" "$READ_DATA_FOLLOW_MIN_OFFSET" "$DIAG_STATE_PATH" "$DIAG_AFTER_READ_DATA_IMAGE" "$DIAG_AFTER_READ_DATA_MIN_OFFSET" "$KS_PENDING_TIMEOUT" "$EMPTY_LIMIT"
-  printf '[%s] note=restart_delay_drains_packets_done_stops_with_keep_prepared_by_default\n' "$(date +%H:%M:%S)"
+  printf '[%s] note=restart_delay_drains_packets_hold_disabled_by_default\n' "$(date +%H:%M:%S)"
 } >> "$LOG"
 
 "$LOADER" \
