@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import errno
+import glob
 import os
 import select
 import struct
@@ -17,6 +18,8 @@ CMD_RESET = 7
 CMD_READY = 0x0B
 CMD_SWITCH_MODE = 0x0C
 SAHARA_HELLO_LEN = 48
+SAHARA_MODE_IMAGE_TX_PENDING = 0
+SAHARA_MODE_IMAGE_TX_COMPLETE = 1
 
 IMAGE_PATHS = {
     6: "image/sdx55m/apps.mbn",
@@ -42,6 +45,28 @@ def now():
 
 def log(tag, msg):
     print(f"[{now()}] {tag}: {msg}", flush=True)
+
+
+def read_diag_state(args):
+    if not args.diag_state_path:
+        return None
+    paths = sorted(glob.glob(args.diag_state_path))
+    if not paths and not glob.has_magic(args.diag_state_path):
+        paths = [args.diag_state_path]
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                return path, file.read().strip()
+        except OSError:
+            continue
+    return None
+
+
+def log_diag_state(args, stage):
+    state = read_diag_state(args)
+    if state:
+        path, text = state
+        log("diag_state", f"{stage} {path}: {text}")
 
 
 def u16(buf, off):
@@ -256,14 +281,15 @@ def write_all(fd, data, label, timeout):
         done += n
 
 
-def send_hello_resp(fd, words, args):
+def send_hello_resp(fd, words, args, mode_override=None):
     version = words[2] if len(words) > 2 else 2
     compatible = words[3] if len(words) > 3 else 1
     target_mode = words[5] if len(words) > 5 else 0
-    mode = target_mode if args.echo_hello_mode else args.hello_mode
+    mode = mode_override if mode_override is not None else target_mode if args.echo_hello_mode else args.hello_mode
     resp = struct.pack("<12I", CMD_HELLO_RESP, SAHARA_HELLO_LEN, version, compatible, 0, mode, 0, 0, 0, 0, 0, 0)
     write_all(fd, resp, "hello_resp", args.write_timeout)
-    log("tx", f"HELLO_RESP version={version} compatible={compatible} target_mode={target_mode} mode={mode}")
+    override = " override=1" if mode_override is not None else ""
+    log("tx", f"HELLO_RESP version={version} compatible={compatible} target_mode={target_mode} mode={mode}{override}")
 
 
 def send_done(fd, timeout):
@@ -362,16 +388,19 @@ def stream_image(fd, fat, image, offset, length, args):
     return sent
 
 
-def handle_packet(fd, fat, data, args):
+def handle_packet(fd, fat, data, args, hello_mode_override=None):
     words = pack_words(data)
     cmd = words[0] if words else 0
     pkt_len = words[1] if len(words) > 1 else len(data)
     log("rx", f"len={len(data)} cmd={cmd} pkt_len={pkt_len} words={' '.join(str(x) for x in words[:12])}")
+    if cmd == 0 and pkt_len == 0 and not any(data):
+        log("rx_empty", f"len={len(data)}")
+        return "empty", 0, None
     if cmd == CMD_HELLO:
         if len(data) < SAHARA_HELLO_LEN:
             raise RuntimeError(f"short HELLO len={len(data)}")
         target_mode = words[5] if len(words) > 5 else 0
-        send_hello_resp(fd, words, args)
+        send_hello_resp(fd, words, args, hello_mode_override)
         if target_mode == 3 and args.mode3_close_delay >= 0:
             return "mode3_close", 0, None
         return "restart", 0, None
@@ -379,8 +408,16 @@ def handle_packet(fd, fat, data, args):
         if len(words) < 5:
             raise RuntimeError("short READ_DATA")
         image = words[2]
-        sent = stream_image(fd, fat, image, words[3], words[4], args)
-        if args.read_data_follow_timeout > 0:
+        offset = words[3]
+        sent = stream_image(fd, fat, image, offset, words[4], args)
+        if (args.diag_after_read_data_image < 0 or
+                args.diag_after_read_data_image == image) and \
+                offset >= args.diag_after_read_data_min_offset:
+            log_diag_state(args, f"after_read_data image={image} offset={offset}")
+        follow_image = args.read_data_follow_image
+        if args.read_data_follow_timeout > 0 and \
+           (follow_image < 0 or follow_image == image) and \
+           offset >= args.read_data_follow_min_offset:
             return "read_data_follow", sent, image
         return "restart", sent, image
     if cmd == CMD_END_OF_IMAGE:
@@ -396,13 +433,19 @@ def handle_packet(fd, fat, data, args):
             if args.done_wait_timeout > 0:
                 return "done_wait", 0, None
             if args.unsafe_done_restart:
-                return "done_restart", 0, None
+                return "done_restart", 0, image
             return "stop", 0, None
         return "stop", 0, None
     if cmd == CMD_DONE_RESP:
-        status = words[2] if len(words) > 2 else None
-        log("done_resp", f"status={status}")
-        if status == 0:
+        image_tx_pending = words[2] if len(words) > 2 else None
+        if image_tx_pending == SAHARA_MODE_IMAGE_TX_PENDING:
+            meaning = "pending"
+        elif image_tx_pending == SAHARA_MODE_IMAGE_TX_COMPLETE:
+            meaning = "complete"
+        else:
+            meaning = "unknown"
+        log("done_resp", f"image_tx_pending={image_tx_pending} meaning={meaning}")
+        if image_tx_pending == SAHARA_MODE_IMAGE_TX_PENDING:
             if args.keep_prepared_after_done_resp or not args.unsafe_done_restart:
                 enable_keep_prepared(args)
             if args.ks_pending_timeout > 0:
@@ -412,6 +455,8 @@ def handle_packet(fd, fat, data, args):
             if args.unsafe_done_restart:
                 return "done_resp_restart", 0, None
             return "stop", 0, None
+        if image_tx_pending == SAHARA_MODE_IMAGE_TX_COMPLETE and args.done_resp_follow_timeout > 0:
+            return "done_resp_follow", 0, None
         return "stop", 0, None
     if cmd == CMD_READY:
         log("ready", "received READY")
@@ -447,6 +492,7 @@ def run_session(fat, args, index):
     read_data_follow_image = None
     restart_deadline = None
     restart_action = None
+    restart_image = None
     ks_pending_deadline = None
     ks_pending_phase = None
     hold_deadline = None
@@ -483,6 +529,7 @@ def run_session(fat, args, index):
                     log("session", f"{index} done_resp_follow_timeout packets={packets} bytes_sent={bytes_sent}")
                     return packets, bytes_sent, "done_resp_follow"
                 if read_data_deadline is not None and read_data_deadline <= now_mono:
+                    log_diag_state(args, f"read_data_follow_timeout image={read_data_follow_image}")
                     log("session", f"{index} read_data_follow_timeout image={read_data_follow_image} packets={packets} bytes_sent={bytes_sent}")
                     return packets, bytes_sent, "read_data_follow"
                 if restart_deadline is not None and restart_deadline <= now_mono:
@@ -506,13 +553,37 @@ def run_session(fat, args, index):
                 log("session", f"{index} eof packets={packets} bytes_sent={bytes_sent}")
                 return packets, bytes_sent, "eof"
             packets += 1
-            action, sent, image = handle_packet(fd, fat, data, args)
+            hello_mode_override = None
+            if restart_deadline is not None and restart_action == "done_restart" and \
+               args.done_hello_mode >= 0 and args.done_hello_mode_image >= -1 and \
+               (args.done_hello_mode_image < 0 or args.done_hello_mode_image == restart_image):
+                hello_mode_override = args.done_hello_mode
+            action, sent, image = handle_packet(fd, fat, data, args, hello_mode_override)
             bytes_sent += sent
+            if action == "empty":
+                continue
             deadline = time.monotonic() + args.idle_timeout
+            if restart_deadline is not None and restart_action in ("done_restart", "done_resp_restart") and action == "restart" and sent == 0 and image is None:
+                if restart_action == "done_restart" and args.done_hello_close_image >= -1 and \
+                   (args.done_hello_close_image < 0 or args.done_hello_close_image == restart_image):
+                    restart_action = "done_hello_restart"
+                    restart_deadline = time.monotonic() + args.done_hello_close_delay
+                    log("session", f"{index} close_after_done_hello image={restart_image} delay={args.done_hello_close_delay}")
+                    continue
+                log("session", f"{index} continue_after_{restart_action}_packet")
+                restart_deadline = None
+                restart_action = None
+                restart_image = None
+                continue
             if restart_deadline is not None:
                 log("session", f"{index} cancel_{restart_action}_after_packet")
                 restart_deadline = None
                 restart_action = None
+                restart_image = None
+            if done_wait_deadline is not None and action == "restart" and sent == 0 and image is None:
+                log("session", f"{index} continue_after_done_wait_packet")
+                done_wait_deadline = None
+                continue
             if done_wait_deadline is not None and action != "done_wait":
                 log("session", f"{index} cancel_done_wait_after_packet")
                 done_wait_deadline = None
@@ -578,6 +649,7 @@ def run_session(fat, args, index):
                     delay = args.done_resp_restart_delay
                 if delay > 0:
                     restart_action = action
+                    restart_image = image
                     restart_deadline = time.monotonic() + delay
                     log("session", f"{index} {action}_delay={delay}")
                     continue
@@ -597,11 +669,20 @@ def parse_args():
     parser.add_argument("--between-sessions", type=float, default=2.0)
     parser.add_argument("--restart-after-packet-delay", type=float, default=1.0)
     parser.add_argument("--done-restart-delay", type=float, default=-1.0)
+    parser.add_argument("--done-hello-close-image", type=int, default=-2)
+    parser.add_argument("--done-hello-close-delay", type=float, default=1.0)
+    parser.add_argument("--done-hello-mode-image", type=int, default=-2)
+    parser.add_argument("--done-hello-mode", type=int, default=-1)
     parser.add_argument("--done-wait-timeout", type=float, default=0.0)
     parser.add_argument("--done-resp-restart-delay", type=float, default=-1.0)
     parser.add_argument("--done-resp-follow-timeout", type=float, default=0.0)
     parser.add_argument("--unsafe-done-restart", action="store_true")
     parser.add_argument("--read-data-follow-timeout", type=float, default=0.0)
+    parser.add_argument("--read-data-follow-image", type=int, default=-1)
+    parser.add_argument("--read-data-follow-min-offset", type=int, default=0)
+    parser.add_argument("--diag-state-path", default="/sys/bus/pci/devices/*/sdx55m_esoc_diag_state")
+    parser.add_argument("--diag-after-read-data-image", type=int, default=-1)
+    parser.add_argument("--diag-after-read-data-min-offset", type=int, default=0)
     parser.add_argument("--ks-pending-timeout", type=float, default=0.0)
     parser.add_argument("--empty-limit", type=int, default=4)
     parser.add_argument("--read-size", type=int, default=4096)
