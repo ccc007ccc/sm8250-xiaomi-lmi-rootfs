@@ -1,0 +1,49 @@
+#!/bin/sh
+set -u
+
+DEV=${DEV:-/dev/mhi_sahara0}
+IMAGE34=${IMAGE34:-/dev/disk/by-partlabel/mdmddr}
+OUT_DIR=${OUT_DIR:-/var/log/lmi-sahara-image34}
+LOADER=${LOADER:-/usr/local/bin/lmi-sahara-image34-loader}
+
+mkdir -p "$OUT_DIR"
+TS=$(date +%Y%m%d-%H%M%S)
+LOG="$OUT_DIR/m59-loader-$TS.log"
+DMESG_BEFORE="$OUT_DIR/m59-dmesg-before-$TS.log"
+DMESG_AFTER="$OUT_DIR/m59-dmesg-after-$TS.log"
+
+{
+	printf 'M59 Sahara image34 test start ts=%s dev=%s image34=%s\n' "$TS" "$DEV" "$IMAGE34"
+	uname -a
+	ls -l "$DEV" "$IMAGE34" 2>&1 || true
+	printf 'mhi_devices:\n'
+	find /sys/bus/mhi/devices -maxdepth 2 -type l -print 2>/dev/null || true
+	printf 'pci_devices:\n'
+	find /sys/bus/pci/devices -maxdepth 2 -type l -print 2>/dev/null || true
+} > "$LOG" 2>&1
+
+dmesg > "$DMESG_BEFORE" 2>&1 || true
+
+run_loader() {
+	LABEL=$1
+	printf '\n[%s] loader_begin %s\n' "$(date +%H:%M:%S)" "$LABEL" >> "$LOG"
+	"$LOADER" --dev "$DEV" --image34 "$IMAGE34" --mode 0 --hold-after-done 30 >> "$LOG" 2>&1
+	RC=$?
+	printf '[%s] loader_end %s rc=%s\n' "$(date +%H:%M:%S)" "$LABEL" "$RC" >> "$LOG"
+	return "$RC"
+}
+
+run_loader first || true
+run_loader second || true
+
+dmesg > "$DMESG_AFTER" 2>&1 || true
+{
+	printf '\nartifacts:\n'
+	printf 'log=%s\n' "$LOG"
+	printf 'dmesg_before=%s\n' "$DMESG_BEFORE"
+	printf 'dmesg_after=%s\n' "$DMESG_AFTER"
+	printf '\nrecent_modem_dmesg:\n'
+	grep -Ei 'sdx55|mhi|sahara|esoc|mdm|modem|17cb|0306|qrtr|wwan|fatal|timeout|sys_error|mission|amss' "$DMESG_AFTER" | tail -200 || true
+} >> "$LOG" 2>&1
+
+cat "$LOG"

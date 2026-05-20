@@ -1,0 +1,93 @@
+#!/bin/sh
+set -u
+
+DEV=${DEV:-/dev/mhi_sahara0}
+MODEM=${MODEM:-/dev/disk/by-partlabel/modem}
+IMAGE34=${IMAGE34:-/dev/disk/by-partlabel/mdmddr}
+IMAGE40=${IMAGE40:-/dev/disk/by-partlabel/msadp}
+OUT_DIR=${OUT_DIR:-/var/log/lmi-sahara}
+LOADER=${LOADER:-/usr/local/bin/lmi-sahara-loader}
+SESSIONS=${SESSIONS:-12}
+IDLE_TIMEOUT=${IDLE_TIMEOUT:-90}
+BETWEEN_SESSIONS=${BETWEEN_SESSIONS:-2}
+RESTART_AFTER_PACKET_DELAY=${RESTART_AFTER_PACKET_DELAY:-1}
+DONE_RESTART_DELAY=${DONE_RESTART_DELAY:--1}
+DONE_WAIT_TIMEOUT=${DONE_WAIT_TIMEOUT:-0}
+DONE_RESP_RESTART_DELAY=${DONE_RESP_RESTART_DELAY:--1}
+DONE_RESP_FOLLOW_TIMEOUT=${DONE_RESP_FOLLOW_TIMEOUT:-0}
+READ_DATA_FOLLOW_TIMEOUT=${READ_DATA_FOLLOW_TIMEOUT:-0}
+READ_DATA_FOLLOW_IMAGE=${READ_DATA_FOLLOW_IMAGE:--1}
+READ_DATA_FOLLOW_MIN_OFFSET=${READ_DATA_FOLLOW_MIN_OFFSET:-0}
+DIAG_STATE_PATH=${DIAG_STATE_PATH:-/sys/bus/pci/devices/*/sdx55m_esoc_diag_state}
+DIAG_AFTER_READ_DATA_IMAGE=${DIAG_AFTER_READ_DATA_IMAGE:--1}
+DIAG_AFTER_READ_DATA_MIN_OFFSET=${DIAG_AFTER_READ_DATA_MIN_OFFSET:-0}
+UNSAFE_DONE_RESTART=${UNSAFE_DONE_RESTART:-0}
+KS_PENDING_TIMEOUT=${KS_PENDING_TIMEOUT:-0}
+EMPTY_LIMIT=${EMPTY_LIMIT:-4}
+AFTER_MODE3_DELAY=${AFTER_MODE3_DELAY:-34}
+HOLD_AFTER_IMAGE=${HOLD_AFTER_IMAGE:-40}
+HOLD_AFTER_IMAGE_TIMEOUT=${HOLD_AFTER_IMAGE_TIMEOUT:-21600}
+KEEP_PREPARED_ON_RELEASE=${KEEP_PREPARED_ON_RELEASE:-0}
+KEEP_PREPARED_AFTER_DONE_RESP=${KEEP_PREPARED_AFTER_DONE_RESP:-0}
+READ_SIZE=${READ_SIZE:-4096}
+CHUNK_SIZE=${CHUNK_SIZE:-65536}
+
+mkdir -p "$OUT_DIR"
+LOG="$OUT_DIR/$(date +%Y%m%d-%H%M%S)-sahara.log"
+
+PARAM=/sys/module/mhi_sahara_diag/parameters/keep_prepared_on_release
+KEEP_PREPARED_PARAM_ARG=
+if [ -e "$PARAM" ]; then
+  printf '%s\n' "$KEEP_PREPARED_ON_RELEASE" > "$PARAM"
+  KEEP_PREPARED_PARAM_ARG="--keep-prepared-param $PARAM"
+fi
+KEEP_PREPARED_AFTER_DONE_RESP_ARG=
+if [ "$KEEP_PREPARED_AFTER_DONE_RESP" = "1" ]; then
+  KEEP_PREPARED_AFTER_DONE_RESP_ARG=--keep-prepared-after-done-resp
+fi
+UNSAFE_DONE_RESTART_ARG=
+if [ "$UNSAFE_DONE_RESTART" = "1" ]; then
+  UNSAFE_DONE_RESTART_ARG=--unsafe-done-restart
+fi
+
+{
+  printf '[%s] start dev=%s modem=%s image34=%s image40=%s\n' "$(date +%H:%M:%S)" "$DEV" "$MODEM" "$IMAGE34" "$IMAGE40"
+  printf '[%s] hold_after_image=%s hold_after_image_timeout=%s keep_prepared_on_release=%s keep_prepared_after_done_resp=%s unsafe_done_restart=%s restart_after_packet_delay=%s done_restart_delay=%s done_wait_timeout=%s done_resp_restart_delay=%s done_resp_follow_timeout=%s read_data_follow_timeout=%s read_data_follow_image=%s read_data_follow_min_offset=%s diag_state_path=%s diag_after_read_data_image=%s diag_after_read_data_min_offset=%s ks_pending_timeout=%s empty_limit=%s\n' "$(date +%H:%M:%S)" "$HOLD_AFTER_IMAGE" "$HOLD_AFTER_IMAGE_TIMEOUT" "$KEEP_PREPARED_ON_RELEASE" "$KEEP_PREPARED_AFTER_DONE_RESP" "$UNSAFE_DONE_RESTART" "$RESTART_AFTER_PACKET_DELAY" "$DONE_RESTART_DELAY" "$DONE_WAIT_TIMEOUT" "$DONE_RESP_RESTART_DELAY" "$DONE_RESP_FOLLOW_TIMEOUT" "$READ_DATA_FOLLOW_TIMEOUT" "$READ_DATA_FOLLOW_IMAGE" "$READ_DATA_FOLLOW_MIN_OFFSET" "$DIAG_STATE_PATH" "$DIAG_AFTER_READ_DATA_IMAGE" "$DIAG_AFTER_READ_DATA_MIN_OFFSET" "$KS_PENDING_TIMEOUT" "$EMPTY_LIMIT"
+  printf '[%s] note=restart_delay_drains_packets_done_stops_with_keep_prepared_by_default\n' "$(date +%H:%M:%S)"
+} >> "$LOG"
+
+"$LOADER" \
+  --dev "$DEV" \
+  --modem "$MODEM" \
+  --image34 "$IMAGE34" \
+  --image40 "$IMAGE40" \
+  --sessions "$SESSIONS" \
+  --idle-timeout "$IDLE_TIMEOUT" \
+  --between-sessions "$BETWEEN_SESSIONS" \
+  --restart-after-packet-delay "$RESTART_AFTER_PACKET_DELAY" \
+  --done-restart-delay "$DONE_RESTART_DELAY" \
+  --done-wait-timeout "$DONE_WAIT_TIMEOUT" \
+  --done-resp-restart-delay "$DONE_RESP_RESTART_DELAY" \
+  --done-resp-follow-timeout "$DONE_RESP_FOLLOW_TIMEOUT" \
+  --read-data-follow-timeout "$READ_DATA_FOLLOW_TIMEOUT" \
+  --read-data-follow-image "$READ_DATA_FOLLOW_IMAGE" \
+  --read-data-follow-min-offset "$READ_DATA_FOLLOW_MIN_OFFSET" \
+  --diag-state-path "$DIAG_STATE_PATH" \
+  --diag-after-read-data-image "$DIAG_AFTER_READ_DATA_IMAGE" \
+  --diag-after-read-data-min-offset "$DIAG_AFTER_READ_DATA_MIN_OFFSET" \
+  $UNSAFE_DONE_RESTART_ARG \
+  --ks-pending-timeout "$KS_PENDING_TIMEOUT" \
+  --empty-limit "$EMPTY_LIMIT" \
+  --after-mode3-delay "$AFTER_MODE3_DELAY" \
+  --hold-after-image "$HOLD_AFTER_IMAGE" \
+  --hold-after-image-timeout "$HOLD_AFTER_IMAGE_TIMEOUT" \
+  $KEEP_PREPARED_AFTER_DONE_RESP_ARG \
+  $KEEP_PREPARED_PARAM_ARG \
+  --read-size "$READ_SIZE" \
+  --chunk-size "$CHUNK_SIZE" \
+  >> "$LOG" 2>&1
+RC=$?
+
+printf '[%s] end rc=%s log=%s\n' "$(date +%H:%M:%S)" "$RC" "$LOG" >> "$LOG"
+printf '%s\n' "$LOG"
+exit "$RC"
