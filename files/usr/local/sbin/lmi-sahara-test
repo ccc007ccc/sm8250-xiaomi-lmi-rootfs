@@ -11,6 +11,9 @@ SESSIONS=${SESSIONS:-12}
 IDLE_TIMEOUT=${IDLE_TIMEOUT:-90}
 BETWEEN_SESSIONS=${BETWEEN_SESSIONS:-2}
 RESTART_AFTER_PACKET_DELAY=${RESTART_AFTER_PACKET_DELAY:-1}
+KS_CONTINUOUS=${KS_CONTINUOUS:-0}
+ACTIVE_READ_DRAIN=${ACTIVE_READ_DRAIN:-0}
+ACTIVE_READ_INTERVAL=${ACTIVE_READ_INTERVAL:-0.02}
 DONE_RESTART_DELAY=${DONE_RESTART_DELAY:--1}
 DONE_HELLO_CLOSE_IMAGE=${DONE_HELLO_CLOSE_IMAGE:--2}
 DONE_HELLO_CLOSE_DELAY=${DONE_HELLO_CLOSE_DELAY:-1}
@@ -60,10 +63,18 @@ UNSAFE_DONE_RESTART_ARG=
 if [ "$UNSAFE_DONE_RESTART" = "1" ]; then
   UNSAFE_DONE_RESTART_ARG=--unsafe-done-restart
 fi
+KS_CONTINUOUS_ARG=
+if [ "$KS_CONTINUOUS" = "1" ]; then
+  KS_CONTINUOUS_ARG=--continuous
+fi
+ACTIVE_READ_DRAIN_ARG=
+if [ "$ACTIVE_READ_DRAIN" = "1" ]; then
+  ACTIVE_READ_DRAIN_ARG=--active-read-drain
+fi
 
 {
   printf '[%s] start dev=%s modem=%s image34=%s image40=%s\n' "$(date +%H:%M:%S)" "$DEV" "$MODEM" "$IMAGE34" "$IMAGE40"
-  printf '[%s] hold_after_image=%s hold_after_image_timeout=%s keep_prepared_on_release=%s keep_prepared_after_done_resp=%s unsafe_done_restart=%s restart_after_packet_delay=%s done_restart_delay=%s done_hello_close_image=%s done_hello_close_delay=%s done_hello_mode_image=%s done_hello_mode=%s done_wait_timeout=%s done_resp_restart_delay=%s done_resp_follow_timeout=%s read_data_follow_timeout=%s read_data_follow_image=%s read_data_follow_min_offset=%s stop_before_read_data_image=%s stop_before_read_data_min_offset=%s stop_after_read_data_image=%s stop_after_read_data_min_offset=%s diag_state_path=%s diag_after_read_data_image=%s diag_after_read_data_min_offset=%s ks_pending_timeout=%s empty_limit=%s cmd_exec=%s max_command_response=%s command_timeout=%s\n' "$(date +%H:%M:%S)" "$HOLD_AFTER_IMAGE" "$HOLD_AFTER_IMAGE_TIMEOUT" "$KEEP_PREPARED_ON_RELEASE" "$KEEP_PREPARED_AFTER_DONE_RESP" "$UNSAFE_DONE_RESTART" "$RESTART_AFTER_PACKET_DELAY" "$DONE_RESTART_DELAY" "$DONE_HELLO_CLOSE_IMAGE" "$DONE_HELLO_CLOSE_DELAY" "$DONE_HELLO_MODE_IMAGE" "$DONE_HELLO_MODE" "$DONE_WAIT_TIMEOUT" "$DONE_RESP_RESTART_DELAY" "$DONE_RESP_FOLLOW_TIMEOUT" "$READ_DATA_FOLLOW_TIMEOUT" "$READ_DATA_FOLLOW_IMAGE" "$READ_DATA_FOLLOW_MIN_OFFSET" "$STOP_BEFORE_READ_DATA_IMAGE" "$STOP_BEFORE_READ_DATA_MIN_OFFSET" "$STOP_AFTER_READ_DATA_IMAGE" "$STOP_AFTER_READ_DATA_MIN_OFFSET" "$DIAG_STATE_PATH" "$DIAG_AFTER_READ_DATA_IMAGE" "$DIAG_AFTER_READ_DATA_MIN_OFFSET" "$KS_PENDING_TIMEOUT" "$EMPTY_LIMIT" "$CMD_EXEC" "$MAX_COMMAND_RESPONSE" "$COMMAND_TIMEOUT"
+  printf '[%s] hold_after_image=%s hold_after_image_timeout=%s keep_prepared_on_release=%s keep_prepared_after_done_resp=%s unsafe_done_restart=%s restart_after_packet_delay=%s ks_continuous=%s active_read_drain=%s active_read_interval=%s done_restart_delay=%s done_hello_close_image=%s done_hello_close_delay=%s done_hello_mode_image=%s done_hello_mode=%s done_wait_timeout=%s done_resp_restart_delay=%s done_resp_follow_timeout=%s read_data_follow_timeout=%s read_data_follow_image=%s read_data_follow_min_offset=%s stop_before_read_data_image=%s stop_before_read_data_min_offset=%s stop_after_read_data_image=%s stop_after_read_data_min_offset=%s diag_state_path=%s diag_after_read_data_image=%s diag_after_read_data_min_offset=%s ks_pending_timeout=%s empty_limit=%s cmd_exec=%s max_command_response=%s command_timeout=%s\n' "$(date +%H:%M:%S)" "$HOLD_AFTER_IMAGE" "$HOLD_AFTER_IMAGE_TIMEOUT" "$KEEP_PREPARED_ON_RELEASE" "$KEEP_PREPARED_AFTER_DONE_RESP" "$UNSAFE_DONE_RESTART" "$RESTART_AFTER_PACKET_DELAY" "$KS_CONTINUOUS" "$ACTIVE_READ_DRAIN" "$ACTIVE_READ_INTERVAL" "$DONE_RESTART_DELAY" "$DONE_HELLO_CLOSE_IMAGE" "$DONE_HELLO_CLOSE_DELAY" "$DONE_HELLO_MODE_IMAGE" "$DONE_HELLO_MODE" "$DONE_WAIT_TIMEOUT" "$DONE_RESP_RESTART_DELAY" "$DONE_RESP_FOLLOW_TIMEOUT" "$READ_DATA_FOLLOW_TIMEOUT" "$READ_DATA_FOLLOW_IMAGE" "$READ_DATA_FOLLOW_MIN_OFFSET" "$STOP_BEFORE_READ_DATA_IMAGE" "$STOP_BEFORE_READ_DATA_MIN_OFFSET" "$STOP_AFTER_READ_DATA_IMAGE" "$STOP_AFTER_READ_DATA_MIN_OFFSET" "$DIAG_STATE_PATH" "$DIAG_AFTER_READ_DATA_IMAGE" "$DIAG_AFTER_READ_DATA_MIN_OFFSET" "$KS_PENDING_TIMEOUT" "$EMPTY_LIMIT" "$CMD_EXEC" "$MAX_COMMAND_RESPONSE" "$COMMAND_TIMEOUT"
   printf '[%s] note=restart_delay_drains_packets_hold_disabled_by_default\n' "$(date +%H:%M:%S)"
 } >> "$LOG"
 
@@ -76,6 +87,9 @@ fi
   --idle-timeout "$IDLE_TIMEOUT" \
   --between-sessions "$BETWEEN_SESSIONS" \
   --restart-after-packet-delay "$RESTART_AFTER_PACKET_DELAY" \
+  $KS_CONTINUOUS_ARG \
+  $ACTIVE_READ_DRAIN_ARG \
+  --active-read-interval "$ACTIVE_READ_INTERVAL" \
   --done-restart-delay "$DONE_RESTART_DELAY" \
   --done-hello-close-image "$DONE_HELLO_CLOSE_IMAGE" \
   --done-hello-close-delay "$DONE_HELLO_CLOSE_DELAY" \
