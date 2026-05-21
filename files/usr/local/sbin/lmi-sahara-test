@@ -30,6 +30,8 @@ STOP_BEFORE_READ_DATA_MIN_OFFSET=${STOP_BEFORE_READ_DATA_MIN_OFFSET:-0}
 STOP_AFTER_READ_DATA_IMAGE=${STOP_AFTER_READ_DATA_IMAGE:--2}
 STOP_AFTER_READ_DATA_MIN_OFFSET=${STOP_AFTER_READ_DATA_MIN_OFFSET:-0}
 DIAG_STATE_PATH=${DIAG_STATE_PATH:-/sys/bus/pci/devices/*/sdx55m_esoc_diag_state}
+ESOC_NOTIFY_PATH=${ESOC_NOTIFY_PATH:-/sys/bus/pci/devices/*/sdx55m_esoc_diag_notify}
+NOTIFY_IMG_XFER_DONE=${NOTIFY_IMG_XFER_DONE:-0}
 DIAG_AFTER_READ_DATA_IMAGE=${DIAG_AFTER_READ_DATA_IMAGE:--1}
 DIAG_AFTER_READ_DATA_MIN_OFFSET=${DIAG_AFTER_READ_DATA_MIN_OFFSET:-0}
 UNSAFE_DONE_RESTART=${UNSAFE_DONE_RESTART:-0}
@@ -71,10 +73,15 @@ ACTIVE_READ_DRAIN_ARG=
 if [ "$ACTIVE_READ_DRAIN" = "1" ]; then
   ACTIVE_READ_DRAIN_ARG=--active-read-drain
 fi
+NOTIFY_IMG_XFER_DONE_ARG=
+if [ "$NOTIFY_IMG_XFER_DONE" = "1" ]; then
+  NOTIFY_IMG_XFER_DONE_ARG=--notify-img-xfer-done
+fi
 
 {
   printf '[%s] start dev=%s modem=%s image34=%s image40=%s\n' "$(date +%H:%M:%S)" "$DEV" "$MODEM" "$IMAGE34" "$IMAGE40"
   printf '[%s] hold_after_image=%s hold_after_image_timeout=%s keep_prepared_on_release=%s keep_prepared_after_done_resp=%s unsafe_done_restart=%s restart_after_packet_delay=%s ks_continuous=%s active_read_drain=%s active_read_interval=%s done_restart_delay=%s done_hello_close_image=%s done_hello_close_delay=%s done_hello_mode_image=%s done_hello_mode=%s done_wait_timeout=%s done_resp_restart_delay=%s done_resp_follow_timeout=%s read_data_follow_timeout=%s read_data_follow_image=%s read_data_follow_min_offset=%s stop_before_read_data_image=%s stop_before_read_data_min_offset=%s stop_after_read_data_image=%s stop_after_read_data_min_offset=%s diag_state_path=%s diag_after_read_data_image=%s diag_after_read_data_min_offset=%s ks_pending_timeout=%s empty_limit=%s cmd_exec=%s max_command_response=%s command_timeout=%s\n' "$(date +%H:%M:%S)" "$HOLD_AFTER_IMAGE" "$HOLD_AFTER_IMAGE_TIMEOUT" "$KEEP_PREPARED_ON_RELEASE" "$KEEP_PREPARED_AFTER_DONE_RESP" "$UNSAFE_DONE_RESTART" "$RESTART_AFTER_PACKET_DELAY" "$KS_CONTINUOUS" "$ACTIVE_READ_DRAIN" "$ACTIVE_READ_INTERVAL" "$DONE_RESTART_DELAY" "$DONE_HELLO_CLOSE_IMAGE" "$DONE_HELLO_CLOSE_DELAY" "$DONE_HELLO_MODE_IMAGE" "$DONE_HELLO_MODE" "$DONE_WAIT_TIMEOUT" "$DONE_RESP_RESTART_DELAY" "$DONE_RESP_FOLLOW_TIMEOUT" "$READ_DATA_FOLLOW_TIMEOUT" "$READ_DATA_FOLLOW_IMAGE" "$READ_DATA_FOLLOW_MIN_OFFSET" "$STOP_BEFORE_READ_DATA_IMAGE" "$STOP_BEFORE_READ_DATA_MIN_OFFSET" "$STOP_AFTER_READ_DATA_IMAGE" "$STOP_AFTER_READ_DATA_MIN_OFFSET" "$DIAG_STATE_PATH" "$DIAG_AFTER_READ_DATA_IMAGE" "$DIAG_AFTER_READ_DATA_MIN_OFFSET" "$KS_PENDING_TIMEOUT" "$EMPTY_LIMIT" "$CMD_EXEC" "$MAX_COMMAND_RESPONSE" "$COMMAND_TIMEOUT"
+  printf '[%s] esoc_notify_path=%s notify_img_xfer_done=%s\n' "$(date +%H:%M:%S)" "$ESOC_NOTIFY_PATH" "$NOTIFY_IMG_XFER_DONE"
   printf '[%s] note=restart_delay_drains_packets_hold_disabled_by_default\n' "$(date +%H:%M:%S)"
 } >> "$LOG"
 
@@ -106,6 +113,8 @@ fi
   --stop-after-read-data-image "$STOP_AFTER_READ_DATA_IMAGE" \
   --stop-after-read-data-min-offset "$STOP_AFTER_READ_DATA_MIN_OFFSET" \
   --diag-state-path "$DIAG_STATE_PATH" \
+  --esoc-notify-path "$ESOC_NOTIFY_PATH" \
+  $NOTIFY_IMG_XFER_DONE_ARG \
   --diag-after-read-data-image "$DIAG_AFTER_READ_DATA_IMAGE" \
   --diag-after-read-data-min-offset "$DIAG_AFTER_READ_DATA_MIN_OFFSET" \
   $UNSAFE_DONE_RESTART_ARG \
