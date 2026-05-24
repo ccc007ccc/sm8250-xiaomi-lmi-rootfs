@@ -405,6 +405,35 @@ emit() {
   [ -e /dev/pmsg0 ] && printf '%s\n' "$MSG" > /dev/pmsg0 2>/dev/null || true
 }
 
+unbind_gadget() {
+  OLD_G="$1"
+  [ -d "$OLD_G" ] || return 0
+  OLD_UDC=$(cat "$OLD_G/UDC" 2>/dev/null)
+  [ -n "$OLD_UDC" ] || return 0
+
+  printf '' > "$OLD_G/UDC" 2>>"$LOG" || {
+    emit "unbind_failed gadget=${OLD_G##*/} udc=$OLD_UDC"
+    return 1
+  }
+  emit "unbound ${OLD_G##*/} from $OLD_UDC"
+}
+
+wait_udc_free() {
+  TARGET="$1"
+  I=0
+  while [ "$I" -lt 20 ]; do
+    BUSY=0
+    for OLD_G in /sys/kernel/config/usb_gadget/*; do
+      [ -e "$OLD_G/UDC" ] || continue
+      [ "$(cat "$OLD_G/UDC" 2>/dev/null)" = "$TARGET" ] && BUSY=1
+    done
+    [ "$BUSY" = 0 ] && return 0
+    sleep 1
+    I=$((I + 1))
+  done
+  return 1
+}
+
 mountpoint -q /sys/kernel/config || mount -t configfs configfs /sys/kernel/config 2>>"$LOG"
 [ -d /sys/kernel/config/usb_gadget ] || {
   emit "no_configfs_usb_gadget"
@@ -429,10 +458,10 @@ if [ -z "$UDC" ]; then
   exit 0
 fi
 
+unbind_gadget /sys/kernel/config/usb_gadget/lmi_ubuntu || true
 G=/sys/kernel/config/usb_gadget/lmi
-if [ -d "$G" ]; then
-  printf '' > "$G/UDC" 2>/dev/null || true
-fi
+unbind_gadget "$G" || true
+wait_udc_free "$UDC" || emit "udc_still_busy udc=$UDC"
 
 mkdir -p "$G"
 printf '0x18d1' > "$G/idVendor"
