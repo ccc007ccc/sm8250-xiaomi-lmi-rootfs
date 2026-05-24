@@ -160,8 +160,14 @@ DRM_IOCTL_MODE_MAP_DUMB = drm_iowr(DRM_IOCTL_MODE_MAP_DUMB_NR, MapDumb)
 DRM_IOCTL_MODE_DESTROY_DUMB = drm_iowr(DRM_IOCTL_MODE_DESTROY_DUMB_NR, DestroyDumb)
 
 
+def copy_mode(mode):
+    copied = DrmModeModeInfo()
+    ctypes.memmove(ctypes.byref(copied), ctypes.byref(mode), ctypes.sizeof(DrmModeModeInfo))
+    return copied
+
+
 def load_libdrm():
-    lib = ctypes.CDLL("libdrm.so.2")
+    lib = ctypes.CDLL("libdrm.so.2", use_errno=True)
     lib.drmModeGetResources.argtypes = [c_int]
     lib.drmModeGetResources.restype = POINTER(DrmModeRes)
     lib.drmModeFreeResources.argtypes = [POINTER(DrmModeRes)]
@@ -180,6 +186,8 @@ def load_libdrm():
     lib.drmModeRmFB.restype = c_int
     lib.drmModeSetCrtc.argtypes = [c_int, c_uint32, c_uint32, c_uint32, c_uint32, POINTER(c_uint32), c_int, POINTER(DrmModeModeInfo)]
     lib.drmModeSetCrtc.restype = c_int
+    lib.drmModeDirtyFB.argtypes = [c_int, c_uint32, ctypes.c_void_p, c_uint32]
+    lib.drmModeDirtyFB.restype = c_int
     return lib
 
 
@@ -201,7 +209,7 @@ class KmsDisplay:
         self.map = None
         self._find_connector()
         self._create_buffer()
-        self.white_frame = self.pixel(WHITE) * (self.width * self.height)
+        self.white_row = self.pixel(WHITE) * self.width
 
     @staticmethod
     def pixel(color):
@@ -232,7 +240,7 @@ class KmsDisplay:
                         for j in range(c.count_modes):
                             mode = c.modes[j]
                             if mode.hdisplay == WIDTH and mode.vdisplay == HEIGHT:
-                                self.modes[int(mode.vrefresh)] = mode
+                                self.modes[int(mode.vrefresh)] = copy_mode(mode)
                         if 60 in self.modes and 77 in self.modes:
                             self.original = self.lib.drmModeGetCrtc(self.fd, self.crtc_id)
                             return
@@ -264,7 +272,12 @@ class KmsDisplay:
         if not mode:
             return False
         ret = self.lib.drmModeSetCrtc(self.fd, self.crtc_id, self.fb_id.value, 0, 0, self.connector_array, 1, ctypes.byref(mode))
-        return ret == 0
+        if ret != 0:
+            raise OSError(ctypes.get_errno(), f"drmModeSetCrtc {rate}Hz failed")
+        return True
+
+    def dirty(self):
+        self.lib.drmModeDirtyFB(self.fd, self.fb_id.value, None, 0)
 
     def restore(self):
         if self.original:
@@ -288,8 +301,9 @@ class KmsDisplay:
             os.close(self.fd)
 
     def clear(self):
-        self.map.seek(0)
-        self.map.write(self.white_frame)
+        for yy in range(self.height):
+            start = yy * self.pitch
+            self.map[start:start + self.width * 4] = self.white_row
 
     def rect(self, x, y, w, h, color):
         x = max(0, min(self.width, int(x)))
@@ -496,11 +510,15 @@ def run(args):
     button_slots = set()
     frame = 0
     try:
+        draw_scene(kms, slots, current_rate, frame)
+        kms.dirty()
+        frame += 1
         kms.set_rate(60)
         while True:
             if process_events(input_fd, slots, changed, button_slots, kms, current_rate):
                 break
             draw_scene(kms, slots, current_rate, frame)
+            kms.dirty()
             frame += 1
             time.sleep(1 / max(30, min(args.fps, 120)))
     finally:

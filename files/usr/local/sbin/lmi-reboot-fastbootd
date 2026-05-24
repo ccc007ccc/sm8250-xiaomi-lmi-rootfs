@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+misc = Path('/dev/disk/by-partlabel/misc')
+if not misc.exists():
+    sys.exit('missing /dev/disk/by-partlabel/misc')
+
+backup_dir = Path('/root') if os.geteuid() == 0 else Path('/tmp')
+backup = backup_dir / f'lmi-misc-before-fastbootd-{time.strftime("%Y%m%d-%H%M%S")}.bin'
+msg = bytearray(2048)
+msg[:len(b'boot-fastboot')] = b'boot-fastboot'
+
+with misc.resolve().open('rb', buffering=0) as f:
+    backup.write_bytes(f.read(2048))
+
+with misc.resolve().open('r+b', buffering=0) as f:
+    f.seek(0)
+    written = f.write(msg)
+    if written != len(msg):
+        sys.exit(f'short write to misc: {written}/{len(msg)}')
+    f.flush()
+    os.fsync(f.fileno())
+
+subprocess.run(['sync'], check=True)
+print(f'wrote boot-fastboot BCB, backup={backup}')
+subprocess.run(['reboot', 'recovery'], check=True)

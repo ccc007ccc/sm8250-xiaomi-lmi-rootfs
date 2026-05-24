@@ -6,6 +6,7 @@ ROOTFS_DIR=${ROOTFS_DIR:-"$REPO_ROOT/out/rootfs"}
 OUT_DIR=${OUT_DIR:-"$REPO_ROOT/out"}
 IMAGE=${IMAGE:-"$OUT_DIR/ubuntu-24.04-arm64-console.ext4"}
 IMAGE_SIZE=${IMAGE_SIZE:-6G}
+FS_LABEL=${FS_LABEL:-ubuntu-rootfs}
 
 if [ "$(id -u)" -ne 0 ]; then
   exec sudo -E "$0" "$@"
@@ -33,7 +34,7 @@ mkdir -p "$OUT_DIR"
 TMP_IMAGE="$IMAGE.tmp"
 rm -f "$TMP_IMAGE"
 truncate -s "$IMAGE_SIZE" "$TMP_IMAGE"
-mkfs.ext4 -F -L ubuntu-rootfs -E lazy_itable_init=0,lazy_journal_init=0 -d "$ROOTFS_DIR" "$TMP_IMAGE"
+mkfs.ext4 -F -L "$FS_LABEL" -E lazy_itable_init=0,lazy_journal_init=0 -d "$ROOTFS_DIR" "$TMP_IMAGE"
 e2fsck -fy "$TMP_IMAGE"
 mv "$TMP_IMAGE" "$IMAGE"
 sha256sum "$IMAGE" > "$IMAGE.sha256"

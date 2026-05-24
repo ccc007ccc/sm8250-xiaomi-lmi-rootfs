@@ -1,0 +1,12 @@
+[Unit]
+Description=Xiaomi lmi debug rootfs key actions
+After=systemd-logind.service systemd-udevd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/lmi-debug-keys.py
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

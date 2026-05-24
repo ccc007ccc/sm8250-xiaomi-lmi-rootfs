@@ -174,6 +174,18 @@ install_firmware
 install_lmi_tools() {
   install -D -m 0755 "$REPO_ROOT/files/usr/local/bin/lmi-touch-refresh-test" \
     "$WORK_DIR/usr/local/bin/lmi-touch-refresh-test"
+  install -D -m 0755 "$REPO_ROOT/files/usr/local/bin/lmi-sahara-image34-loader" \
+    "$WORK_DIR/usr/local/bin/lmi-sahara-image34-loader"
+  install -D -m 0755 "$REPO_ROOT/files/usr/local/bin/lmi-sahara-loader" \
+    "$WORK_DIR/usr/local/bin/lmi-sahara-loader"
+  install -D -m 0755 "$REPO_ROOT/files/usr/local/sbin/lmi-sahara-image34-test" \
+    "$WORK_DIR/usr/local/sbin/lmi-sahara-image34-test"
+  install -D -m 0755 "$REPO_ROOT/files/usr/local/sbin/lmi-sahara-test" \
+    "$WORK_DIR/usr/local/sbin/lmi-sahara-test"
+  install -D -m 0755 "$REPO_ROOT/files/usr/local/sbin/lmi-debug-keys.py" \
+    "$WORK_DIR/usr/local/sbin/lmi-debug-keys.py"
+  install -D -m 0644 "$REPO_ROOT/files/etc/systemd/system/lmi-debug-keys.service" \
+    "$WORK_DIR/etc/systemd/system/lmi-debug-keys.service"
 }
 
 install_lmi_tools
@@ -250,6 +262,13 @@ EOF
 
 cat > "$WORK_DIR/etc/fstab" <<'EOF'
 LABEL=ubuntu-rootfs / ext4 defaults,noatime 0 1
+EOF
+
+mkdir -p "$WORK_DIR/etc/systemd/logind.conf.d"
+cat > "$WORK_DIR/etc/systemd/logind.conf.d/10-lmi-power-key.conf" <<'EOF'
+[Login]
+HandlePowerKey=ignore
+HandlePowerKeyLongPress=ignore
 EOF
 
 mkdir -p "$WORK_DIR/etc/systemd/system/getty@tty1.service.d"
@@ -861,6 +880,7 @@ ln -sf /etc/systemd/system/lmi-firstboot-report.service "$WORK_DIR/etc/systemd/s
 ln -sf /etc/systemd/system/lmi-firmware-import.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-firmware-import.service"
 ln -sf /etc/systemd/system/lmi-wireless-reprobe.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-wireless-reprobe.service"
 ln -sf /etc/systemd/system/lmi-wifi-connect.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-wifi-connect.service"
+ln -sf /etc/systemd/system/lmi-debug-keys.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-debug-keys.service"
 ln -sf /lib/systemd/system/systemd-networkd.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/systemd-networkd.service"
 ln -sf /lib/systemd/system/systemd-resolved.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/systemd-resolved.service"
 ln -sf /lib/systemd/system/ssh.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/ssh.service"
