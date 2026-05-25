@@ -25,6 +25,9 @@ KEY_NAMES = {
     KEY_VOLUMEDOWN: "KEY_VOLUMEDOWN",
     KEY_VOLUMEUP: "KEY_VOLUMEUP",
 }
+POWER_LONG_PRESS_SECONDS = 1.0
+_power_pressed_at: float | None = None
+_power_long_handled = False
 
 
 def log(message: str) -> None:
@@ -100,22 +103,55 @@ def _run_action(controller: BacklightController, key_id: str, action: str) -> No
         return
 
 
-def handle_key(controller: BacklightController, code: int, value: int, name: str) -> None:
-    key_name = KEY_NAMES.get(code, f"KEY_{code}")
-    log(f"key_event source={name} code={code} name={key_name} value={value}")
-    key_id = _key_id(code)
-    if key_id is None:
-        return
-    if code == KEY_POWER and value != 1:
-        return
-    if code in (KEY_VOLUMEUP, KEY_VOLUMEDOWN) and value not in (1, 2):
-        return
+def _run_configured_action(controller: BacklightController, key_id: str) -> None:
     try:
         action = keymap.action_for(key_id)
     except ValueError as exc:
         log(f"keymap_invalid key={key_id} error={str(exc).replace(' ', '_')}")
         action = keymap.DEFAULT_ACTIONS[key_id]
     _run_action(controller, key_id, action)
+
+
+def _handle_power_key(controller: BacklightController, value: int) -> None:
+    global _power_long_handled, _power_pressed_at
+    if value == 1:
+        _power_pressed_at = time.monotonic()
+        _power_long_handled = False
+        return
+    if value == 2:
+        if _power_pressed_at is None or _power_long_handled:
+            return
+        duration = time.monotonic() - _power_pressed_at
+        if duration >= POWER_LONG_PRESS_SECONDS:
+            _power_long_handled = True
+            log(f"power_press kind=long duration_ms={int(duration * 1000)}")
+            _run_configured_action(controller, "power-long")
+        return
+    if value != 0 or _power_pressed_at is None:
+        return
+    duration = time.monotonic() - _power_pressed_at
+    _power_pressed_at = None
+    if _power_long_handled or duration >= POWER_LONG_PRESS_SECONDS:
+        if not _power_long_handled:
+            log(f"power_press kind=long duration_ms={int(duration * 1000)}")
+            _run_configured_action(controller, "power-long")
+        return
+    log(f"power_press kind=short duration_ms={int(duration * 1000)}")
+    _run_configured_action(controller, "power")
+
+
+def handle_key(controller: BacklightController, code: int, value: int, name: str) -> None:
+    key_name = KEY_NAMES.get(code, f"KEY_{code}")
+    log(f"key_event source={name} code={code} name={key_name} value={value}")
+    key_id = _key_id(code)
+    if key_id is None:
+        return
+    if code == KEY_POWER:
+        _handle_power_key(controller, value)
+        return
+    if code in (KEY_VOLUMEUP, KEY_VOLUMEDOWN) and value not in (1, 2):
+        return
+    _run_configured_action(controller, key_id)
 
 
 def main() -> None:

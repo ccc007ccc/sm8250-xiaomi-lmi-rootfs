@@ -4,10 +4,11 @@ from pathlib import Path
 from typing import Optional
 
 KEYMAP_PATH = os.environ.get("LMI_POWER_KEYMAP_PATH", "/etc/lmi-power/keys.conf")
-KEYS = ("power", "volume-up", "volume-down")
+KEYS = ("power", "power-long", "volume-up", "volume-down")
 ACTIONS = ("toggle-backlight", "backlight-on", "backlight-off", "brightness-up", "brightness-down", "none")
 DEFAULT_ACTIONS = {
     "power": "toggle-backlight",
+    "power-long": "none",
     "volume-up": "brightness-up",
     "volume-down": "brightness-down",
 }

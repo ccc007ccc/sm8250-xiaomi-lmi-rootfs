@@ -8,6 +8,7 @@ from lmi_power import keymap
 class KeymapTest(unittest.TestCase):
     def test_defaults(self):
         self.assertEqual(keymap.default_keymap()["power"], "toggle-backlight")
+        self.assertEqual(keymap.default_keymap()["power-long"], "none")
         self.assertEqual(keymap.default_keymap()["volume-up"], "brightness-up")
         self.assertEqual(keymap.default_keymap()["volume-down"], "brightness-down")
 

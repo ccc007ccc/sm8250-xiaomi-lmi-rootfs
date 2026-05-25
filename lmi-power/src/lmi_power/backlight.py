@@ -110,7 +110,7 @@ class BacklightController:
         max_brightness = max(1, self.read_int(os.path.join(path, "max_brightness"), 1))
         bl_power = self.read_int(os.path.join(path, "bl_power"), 0)
         fb_blank = self.read_fb_blank()
-        is_off = self.forced_off or bl_power != 0 or brightness == 0 or (fb_blank is not None and fb_blank != 0)
+        is_off = self.forced_off or bl_power != 0 or brightness == 0 or actual == 0 or (fb_blank is not None and fb_blank != 0)
         return BacklightStatus(
             path=path,
             brightness=brightness,
@@ -128,8 +128,9 @@ class BacklightController:
             return True if status is None else status.is_off
         bl_power = self.read_int(os.path.join(path, "bl_power"), 0)
         brightness = self.read_int(os.path.join(path, "brightness"), 0)
+        actual = self.read_int(os.path.join(path, "actual_brightness"), brightness)
         fb_blank = self.read_fb_blank()
-        return self.forced_off or bl_power != 0 or brightness == 0 or (fb_blank is not None and fb_blank != 0)
+        return self.forced_off or bl_power != 0 or brightness == 0 or actual == 0 or (fb_blank is not None and fb_blank != 0)
 
     def set_on(self) -> bool:
         path = self.path()
@@ -142,10 +143,11 @@ class BacklightController:
             ok = True
             fb_blank = self.read_fb_blank()
             bl_power = self.read_int(os.path.join(path, "bl_power"), 0)
-            if fb_blank is not None and fb_blank != 0:
+            actual = self.read_int(os.path.join(path, "actual_brightness"), target)
+            if fb_blank is not None and (fb_blank != 0 or actual == 0):
                 self._pace_blank_write()
                 ok = self.write_fb_blank(0)
-            if bl_power != 0:
+            if bl_power != 0 or actual == 0:
                 self._pace_blank_write()
                 ok = self.write_text(os.path.join(path, "bl_power"), 0) and ok
             self._pace_brightness_write()

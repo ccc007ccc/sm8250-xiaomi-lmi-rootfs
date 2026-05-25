@@ -42,6 +42,14 @@ class BacklightTest(unittest.TestCase):
         self.assertEqual((panel / "brightness").read_text(encoding="utf-8"), "100")
         self.assertEqual((fb0 / "blank").read_text(encoding="utf-8"), "0")
 
+    def test_actual_brightness_zero_counts_as_off(self):
+        temp, panel, fb0, controller = self.make_backlight()
+        self.addCleanup(temp.cleanup)
+        (panel / "actual_brightness").write_text("0", encoding="utf-8")
+        self.assertTrue(controller.status().is_off)
+        self.assertTrue(controller.toggle())
+        self.assertEqual((panel / "brightness").read_text(encoding="utf-8"), "100")
+
     def test_framebuffer_blank_counts_as_off(self):
         temp, panel, fb0, controller = self.make_backlight()
         self.addCleanup(temp.cleanup)
