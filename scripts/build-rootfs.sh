@@ -182,10 +182,24 @@ install_lmi_tools() {
     "$WORK_DIR/usr/local/sbin/lmi-sahara-image34-test"
   install -D -m 0755 "$REPO_ROOT/files/usr/local/sbin/lmi-sahara-test" \
     "$WORK_DIR/usr/local/sbin/lmi-sahara-test"
-  install -D -m 0755 "$REPO_ROOT/files/usr/local/sbin/lmi-debug-keys.py" \
-    "$WORK_DIR/usr/local/sbin/lmi-debug-keys.py"
-  install -D -m 0644 "$REPO_ROOT/files/etc/systemd/system/lmi-debug-keys.service" \
-    "$WORK_DIR/etc/systemd/system/lmi-debug-keys.service"
+  mkdir -p "$WORK_DIR/usr/local/lib/lmi-power"
+  rm -rf "$WORK_DIR/usr/local/lib/lmi-power/lmi_power"
+  cp -a "$REPO_ROOT/lmi-power/src/lmi_power" "$WORK_DIR/usr/local/lib/lmi-power/lmi_power"
+  find "$WORK_DIR/usr/local/lib/lmi-power/lmi_power" -type d -name __pycache__ -prune -exec rm -rf {} +
+  find "$WORK_DIR/usr/local/lib/lmi-power/lmi_power" -type d -exec chmod 0755 {} +
+  find "$WORK_DIR/usr/local/lib/lmi-power/lmi_power" -type f -exec chmod 0644 {} +
+  install -D -m 0755 "$REPO_ROOT/files/usr/local/bin/lmi-power" \
+    "$WORK_DIR/usr/local/bin/lmi-power"
+  install -D -m 0755 "$REPO_ROOT/files/usr/local/sbin/lmi-powerd" \
+    "$WORK_DIR/usr/local/sbin/lmi-powerd"
+  install -D -m 0755 "$REPO_ROOT/files/usr/local/sbin/lmi-power-keysd" \
+    "$WORK_DIR/usr/local/sbin/lmi-power-keysd"
+  install -D -m 0644 "$REPO_ROOT/files/etc/systemd/system/lmi-powerd.service" \
+    "$WORK_DIR/etc/systemd/system/lmi-powerd.service"
+  install -D -m 0644 "$REPO_ROOT/files/etc/systemd/system/lmi-power-keysd.service" \
+    "$WORK_DIR/etc/systemd/system/lmi-power-keysd.service"
+  install -D -m 0644 "$REPO_ROOT/files/etc/lmi-power/keys.conf" \
+    "$WORK_DIR/etc/lmi-power/keys.conf"
 }
 
 install_lmi_tools
@@ -909,7 +923,8 @@ ln -sf /etc/systemd/system/lmi-firstboot-report.service "$WORK_DIR/etc/systemd/s
 ln -sf /etc/systemd/system/lmi-firmware-import.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-firmware-import.service"
 ln -sf /etc/systemd/system/lmi-wireless-reprobe.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-wireless-reprobe.service"
 ln -sf /etc/systemd/system/lmi-wifi-connect.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-wifi-connect.service"
-ln -sf /etc/systemd/system/lmi-debug-keys.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-debug-keys.service"
+ln -sf /etc/systemd/system/lmi-power-keysd.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-power-keysd.service"
+ln -sf /etc/systemd/system/lmi-powerd.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/lmi-powerd.service"
 ln -sf /lib/systemd/system/systemd-networkd.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/systemd-networkd.service"
 ln -sf /lib/systemd/system/systemd-resolved.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/systemd-resolved.service"
 ln -sf /lib/systemd/system/ssh.service "$WORK_DIR/etc/systemd/system/multi-user.target.wants/ssh.service"

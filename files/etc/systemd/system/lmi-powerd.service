@@ -1,0 +1,14 @@
+[Unit]
+Description=Xiaomi lmi power policy daemon
+After=local-fs.target systemd-udevd.service
+Conflicts=lmi-battery-protect.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/lmi-power
+ExecStart=/usr/local/sbin/lmi-powerd
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

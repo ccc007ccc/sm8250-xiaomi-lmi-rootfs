@@ -1,0 +1,4 @@
+#!/bin/sh
+PYTHONPATH=/usr/local/lib/lmi-power${PYTHONPATH:+:$PYTHONPATH}
+export PYTHONPATH
+exec python3 -m lmi_power.keys_daemon "$@"
