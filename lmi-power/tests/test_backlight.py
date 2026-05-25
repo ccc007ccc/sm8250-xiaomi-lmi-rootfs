@@ -19,7 +19,7 @@ class BacklightTest(unittest.TestCase):
         (panel / "max_brightness").write_text("200", encoding="utf-8")
         (panel / "bl_power").write_text("0", encoding="utf-8")
         (fb0 / "blank").write_text("0", encoding="utf-8")
-        return temp, panel, fb0, BacklightController(root=str(root), fb_root=str(fb_root))
+        return temp, panel, fb0, BacklightController(root=str(root), fb_root=str(fb_root), brightness_interval=0, blank_interval=0)
 
     def test_toggle_off_and_on_restores_brightness(self):
         temp, panel, fb0, controller = self.make_backlight()
