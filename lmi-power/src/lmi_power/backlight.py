@@ -139,9 +139,15 @@ class BacklightController:
         max_brightness = max(1, self.read_int(os.path.join(path, "max_brightness"), 1))
         target = self.last_brightness if 0 < self.last_brightness <= max_brightness else max(1, max_brightness // 2)
         with self._display_lock:
-            self._pace_blank_write()
-            ok = self.write_fb_blank(0)
-            ok = self.write_text(os.path.join(path, "bl_power"), 0) and ok
+            ok = True
+            fb_blank = self.read_fb_blank()
+            bl_power = self.read_int(os.path.join(path, "bl_power"), 0)
+            if fb_blank is not None and fb_blank != 0:
+                self._pace_blank_write()
+                ok = self.write_fb_blank(0)
+            if bl_power != 0:
+                self._pace_blank_write()
+                ok = self.write_text(os.path.join(path, "bl_power"), 0) and ok
             self._pace_brightness_write()
             ok = self.write_text(os.path.join(path, "brightness"), target) and ok
         if ok:
@@ -164,9 +170,6 @@ class BacklightController:
         with self._display_lock:
             self._pace_brightness_write()
             ok = self.write_text(os.path.join(path, "brightness"), 0)
-            self._pace_blank_write()
-            ok = self.write_text(os.path.join(path, "bl_power"), 4) and ok
-            ok = self.write_fb_blank(4) and ok
         if ok:
             self.forced_off = True
             self.log(f"backlight_off path={path} restore={self.last_brightness}/{max_brightness}")
@@ -222,9 +225,6 @@ class BacklightController:
                 ok = self.write_text(os.path.join(path, "bl_power"), 0) and ok
             self._pace_brightness_write()
             ok = self.write_text(os.path.join(path, "brightness"), target) and ok
-            if target == 0:
-                self._pace_blank_write()
-                ok = self.write_fb_blank(4) and ok
         if ok:
             self.forced_off = target == 0
             if target > 0:
