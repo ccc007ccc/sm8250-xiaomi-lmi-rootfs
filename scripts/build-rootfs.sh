@@ -286,10 +286,10 @@ HandlePowerKeyLongPress=ignore
 EOF
 
 mkdir -p "$WORK_DIR/etc/systemd/system/getty@tty1.service.d"
-cat > "$WORK_DIR/etc/systemd/system/getty@tty1.service.d/no-autologin.conf" <<'EOF'
+cat > "$WORK_DIR/etc/systemd/system/getty@tty1.service.d/autologin.conf" <<'EOF'
 [Service]
 ExecStart=
-ExecStart=-/sbin/agetty --noclear %I $TERM
+ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
 EOF
 
 cat > "$WORK_DIR/usr/local/sbin/lmi-firstboot-report" <<'EOF'
