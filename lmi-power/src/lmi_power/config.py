@@ -21,8 +21,8 @@ def _env_int(names: Iterable[str], default: int, log: Optional[LogFn] = None) ->
 
 @dataclass(frozen=True)
 class PolicyConfig:
-    stop_percent: int = 75
-    resume_percent: int = 70
+    stop_percent: int = 70
+    resume_percent: int = 65
     charge_input_current_ua: int = 700000
     hold_input_current_ua: int = 1000000
     hot_stop_decic: int = 550
@@ -35,8 +35,8 @@ class PolicyConfig:
     @classmethod
     def from_env(cls, log: Optional[LogFn] = None) -> "PolicyConfig":
         return cls(
-            stop_percent=_env_int(("LMI_POWER_STOP_PERCENT", "LMI_BP_STOP_PERCENT"), 75, log),
-            resume_percent=_env_int(("LMI_POWER_RESUME_PERCENT", "LMI_BP_RESUME_PERCENT"), 70, log),
+            stop_percent=_env_int(("LMI_POWER_STOP_PERCENT", "LMI_BP_STOP_PERCENT"), 70, log),
+            resume_percent=_env_int(("LMI_POWER_RESUME_PERCENT", "LMI_BP_RESUME_PERCENT"), 65, log),
             charge_input_current_ua=_env_int(("LMI_POWER_CHARGE_INPUT_CURRENT_UA", "LMI_BP_CHARGE_INPUT_CURRENT_UA"), 700000, log),
             hold_input_current_ua=_env_int(("LMI_POWER_HOLD_INPUT_CURRENT_UA", "LMI_BP_HOLD_INPUT_CURRENT_UA"), 1000000, log),
             hot_stop_decic=_env_int(("LMI_POWER_HOT_STOP_DECIC", "LMI_BP_HOT_STOP_DECIC"), 550, log),
